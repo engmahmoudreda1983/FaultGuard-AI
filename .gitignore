@@ -1,0 +1,8 @@
+.streamlit/secrets.toml
+__pycache__/
+*.xlsx
+data/
+*.cfg
+*.dat
+*.CFG
+*.DAT
