@@ -359,37 +359,65 @@ def src_changed():
         fill_demo()
 
 
-def read_record(files):
-    """Disturbance record from the uploaded files: COMTRADE (.cfg + .dat, or a .zip of them) or CSV."""
+def read_records(files):
+    """All disturbance records in the uploads: COMTRADE pairs (.cfg + .dat with the same name, also inside .zip files) and CSV records."""
     by = {}
     for f in files:
-        name = f.name.lower(); data = f.getvalue()
-        if name.endswith('.zip'):
+        name = f.name; data = f.getvalue()
+        if name.lower().endswith('.zip'):
             with zipfile.ZipFile(io.BytesIO(data)) as z:
                 for n in z.namelist():
-                    by[n.lower().rsplit('/', 1)[-1]] = z.read(n)
+                    if not n.endswith('/'):
+                        by[n.rsplit('/', 1)[-1]] = z.read(n)
         else:
             by[name] = data
-    cfgs = [n for n in by if n.endswith('.cfg')]
-    if cfgs:
-        stem = cfgs[0][:-4]
-        dat = by.get(stem + '.dat') or next((v for n, v in by.items() if n.endswith('.dat')), None)
-        if dat is None:
-            raise ValueError("The .dat file of the COMTRADE record is missing: upload the .cfg and the .dat together.")
-        txt = by[cfgs[0]].decode('latin-1')
-        return fg.read_comtrade(txt, dat), cfgs[0]
-    csvs = [n for n in by if n.endswith('.csv')]
-    if csvs:
-        return fg.read_record_csv(by[csvs[0]], st.session_state.get('csv_freq', 50.0)), csvs[0]
-    raise ValueError("No disturbance record found: upload COMTRADE .cfg + .dat (or a .zip of them), or a CSV record.")
+    low = {n.lower(): n for n in by}
+    out, missing = [], []
+    for n in by:
+        if n.lower().endswith('.cfg'):
+            stem = n[:-4].lower()
+            dn = low.get(stem + '.dat')
+            if dn is None:
+                dats = [x for x in by if x.lower().endswith('.dat')]
+                dn = dats[0] if len(dats) == 1 and sum(x.lower().endswith('.cfg') for x in by) == 1 else None
+            if dn is None:
+                missing.append(n); continue
+            out.append((n, fg.read_comtrade(by[n].decode('latin-1'), by[dn])))
+        elif n.lower().endswith('.csv'):
+            out.append((n, fg.read_record_csv(by[n], st.session_state.get('csv_freq', 50.0))))
+    return out, missing
+
+
+def read_docs(files, kind):
+    """Event lists or settings files in any format (PDF, scanned PDF, picture, CSV, TXT, Excel)."""
+    res, bad = [], []
+    for f in files or []:
+        try:
+            if kind == 'events':
+                df = fg.parse_events(f.getvalue(), f.name)
+                if df is not None and len(df):
+                    res.append((f.name, df))
+                else:
+                    bad.append(f.name)
+            else:
+                txt, how = fg.extract_text(f.getvalue(), f.name)
+                sv = fg.parse_settings(txt); sv['_read_as'] = how
+                if [k for k in sv if not k.startswith('_') and k != 'device']:
+                    res.append((f.name, sv))
+                else:
+                    bad.append(f.name)
+        except Exception as e:
+            bad.append(f"{f.name} ({e})")
+    return res, bad
 
 
 def analysis_page():
     init_fp()
-    st.markdown("<div class='pg-note'>Upload the relay <b>disturbance record</b> (COMTRADE .cfg + .dat, a .zip of them, or CSV) and, if available, the relay "
-                "<b>event list</b> (CSV, TXT or PDF export). Enter the line data and press <b>Analyze</b>. Or pick a demo incident.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='pg-note'>Upload the files of every relay involved: <b>disturbance records</b> (COMTRADE .cfg + .dat, any number of relays), "
+                "<b>event lists</b> and <b>settings</b> (PDF, scanned PDF, picture, CSV, TXT or Excel, any number). FaultGuard merges them into one trip "
+                "analysis. Without a settings file, enter the line data below. Or pick a demo incident.</div>", unsafe_allow_html=True)
     src = st.radio("Data source", ["Demo incident", "Upload relay files"], horizontal=True, key='fp_src', on_change=src_changed)
-    events, rec, rec_name, ev_name = None, None, None, None
+    events, rec, rec_name, ev_name, settings = None, None, None, None, None
     if src == "Demo incident":
         c1, c2 = st.columns([1.3, 1])
         c1.selectbox("Demo incident", range(len(fg.DEMO_INCIDENTS)), format_func=demo_label, key='demo_i', on_change=fill_demo)
@@ -403,12 +431,15 @@ def analysis_page():
             d2.download_button("📥 .dat", dat, f"{stem}.dat", key='dl_dat')
             d3.download_button("📥 events.txt", fg.events_to_text(E).encode(), f"{stem}_events.txt", key='dl_ev')
     else:
-        c1, c2 = st.columns(2)
-        up_rec = c1.file_uploader("Disturbance record (.cfg + .dat, .zip or .csv)", type=['cfg', 'dat', 'zip', 'csv', 'CFG', 'DAT', 'ZIP', 'CSV'],
-                                  accept_multiple_files=True, key='up_rec')
-        up_ev = c2.file_uploader("Event lists (optional, one per relay: .csv, .txt or .pdf)", type=['csv', 'txt', 'pdf', 'CSV', 'TXT', 'PDF'],
-                                 accept_multiple_files=True, key='up_ev')
+        DOC = ['pdf', 'csv', 'txt', 'xlsx', 'xls', 'png', 'jpg', 'jpeg', 'bmp', 'tif', 'tiff', 'webp']
+        DOC = DOC + [x.upper() for x in DOC]
+        c1, c2, c3 = st.columns(3)
+        up_rec = c1.file_uploader("1. Disturbance records (COMTRADE .cfg + .dat, .zip, or CSV), any number of relays",
+                                  type=['cfg', 'dat', 'zip', 'csv', 'CFG', 'DAT', 'ZIP', 'CSV'], accept_multiple_files=True, key='up_rec')
+        up_ev = c2.file_uploader("2. Event lists (PDF, picture, CSV, TXT, Excel), any number", type=DOC, accept_multiple_files=True, key='up_ev')
+        up_set = c3.file_uploader("3. Relay settings (PDF, picture, CSV, TXT, Excel), any number", type=DOC, accept_multiple_files=True, key='up_set')
         c1.number_input("Frequency for CSV records (Hz)", 45.0, 65.0, 50.0, 10.0, key='csv_freq')
+        c3.checkbox("Use the settings files for the line data and protection settings", True, key='use_set')
     st.markdown("##### Incident")
     c = st.columns(4)
     c[0].text_input("Incident ID", key='inc_id'); c[1].text_input("Substation", key='inc_station')
@@ -444,7 +475,7 @@ def analysis_page():
         c[0].number_input("Breaker rated break time (ms)", 20.0, 150.0, step=5.0, key='st_cb_rated_ms')
         c[1].number_input("Critical clearing time (ms)", 60.0, 500.0, step=10.0, key='st_critical_ms')
         c[2].number_input("Breaker rating (kA)", 10.0, 80.0, step=1.0, key='st_cb_rating_ka')
-        c[3].checkbox("Auto-reclose in service", True, key='st_ar')
+        c[3].checkbox("Auto-reclose in service (normally off: external recloser)", False, key='st_ar')
         c = st.columns(3)
         c[0].selectbox("Record values are", ['Auto', 'Primary', 'Secondary'], key='scale',
                        help="Auto: use the COMTRADE primary/secondary flag and ratios. Secondary: multiply by the CT and VT ratios below.")
@@ -456,18 +487,21 @@ def analysis_page():
                 rec = fg.read_comtrade(cfg, dat); events = E; rec_name = f"{stem} (demo)"
             else:
                 if not up_rec:
-                    st.error("Upload the disturbance record first."); return
-                rec, rec_name = read_record(up_rec)
-                if up_ev:
-                    events = []
-                    for f in up_ev:
-                        df = fg.parse_events(f.getvalue(), f.name)
-                        if df is None or not len(df):
-                            st.warning(f"No time-stamped events could be read from {f.name}: it is left out.")
-                        else:
-                            events.append((f.name, df))
-                    ev_name = ', '.join(f.name for f in up_ev)
-                    events = events or None
+                    st.error("Upload at least one disturbance record."); return
+                with st.spinner("Reading the files (pictures and scanned PDFs are read by OCR)…"):
+                    recs, missing = read_records(up_rec)
+                    for n in missing:
+                        st.warning(f"{n}: its .dat file is missing, so this record is left out.")
+                    if not recs:
+                        st.error("No complete disturbance record: upload each .cfg with its .dat."); return
+                    events, bad = read_docs(up_ev, 'events')
+                    for n in bad:
+                        st.warning(f"No time-stamped events could be read from {n}: it is left out.")
+                    settings, bad = read_docs(up_set, 'settings')
+                    for n in bad:
+                        st.warning(f"No settings could be read from {n}: it is left out.")
+                rec_name = ', '.join(n for n, _ in recs); ev_name = ', '.join(n for n, _ in events)
+                events = events or None; rec = recs[0][1]
             ss = st.session_state
             line = {k: float(ss['ln_' + k]) for k, _, _ in LINE_KEYS}
             setting = {k: float(ss['st_' + k]) for k in SET_DEF}
@@ -475,7 +509,15 @@ def analysis_page():
             meta = {'Incident': ss['inc_id'] or rec_name, 'Station': ss['inc_station'] or (rec.get('station') or '').title(),
                     'Line': ss['inc_line'] or (rec.get('device') or '').title(), 'Relay': ss['inc_relay'] or (rec.get('device') or '').title(),
                     'Date': str(rec.get('start'))[:19] if rec.get('start') else ''}
-            a = fg.analyze(rec, events, line, setting, model=MODEL(), scale=ss['scale'], ct=ss['ct'], vt=ss['vt'], meta=meta)
+            if src == "Demo incident":
+                a = fg.analyze(rec, events, line, setting, model=MODEL(), scale=ss['scale'], ct=ss['ct'], vt=ss['vt'], meta=meta)
+            else:
+                a, rec = fg.analyze_incident(recs, events, settings, line, setting, model=MODEL(), scale=ss['scale'], ct=ss['ct'], vt=ss['vt'],
+                                             meta=meta, use_settings=ss.get('use_set', True))
+                if not ss['inc_station']:
+                    a['meta']['Station'] = (rec.get('station') or '').title()
+                if not ss['inc_relay'] and a.get('relay_reports'):
+                    a['meta']['Relay'] = ' / '.join(a['relay_reports'])
         except Exception as e:
             st.error(f"Could not analyze the files: {e}")
             return
@@ -502,6 +544,14 @@ def show_incident(a, rec):
                + (f" · event list: {len(a['events'])} events" if a.get('events') is not None else " · no event list"))
     for n in a.get('notes', []):
         st.info(n)
+    if len(a.get('records') or []) > 1:
+        st.markdown("#### Disturbance records of this incident")
+        st.dataframe(pd.DataFrame(a['records']), hide_index=True, width=STRETCH)
+        st.caption(f"The report is built on {a.get('record_name')} (the most complete record); the others are compared above.")
+    if a.get('settings_all'):
+        with st.expander(f"⚙️ Settings read from {len(a['settings_all'])} file(s)", expanded=False):
+            st.dataframe(fg.settings_table(a['settings_all']), hide_index=True, width=STRETCH)
+            st.caption('Read as: ' + ', '.join(f"{n}: {sv.get('_read_as', '')}" for n, sv in a['settings_all']))
     if a.get('restored'):
         rs = a['restored']
         st.caption(f"Line re-energised at {pd.Timestamp(rs['time']):%Y-%m-%d %H:%M:%S}, {fg.fmt_dur(rs['after_s'])} after the fault ({rs['device']}: {rs['event']}).")
@@ -515,7 +565,8 @@ def show_incident(a, rec):
     f0 = lambda v: '-' if v is None else f"{v:.0f} ms"
     k[3].metric("Relay operate", f0(a.get('operate_ms')), ', '.join(e[1] for e in a['elements'])[:28] or None, delta_arrow='off', delta_color='off')
     k[4].metric("Breaker", f0(a.get('breaker_ms')), f"clearing {f0(a.get('clearing_ms'))}", delta_arrow='off', delta_color='off')
-    k[5].metric("Auto-reclose", a['ar'].split(' (')[0].split(',')[0], (a['ar'].split(' (')[0].split(', ')[1:] or [None])[0], delta_arrow='off', delta_color='off')
+    ar0 = a['ar'].split(';')[0].split(' (')[0]
+    k[5].metric("Auto-reclose", ar0.split(',')[0], (a['ar'].split('; ')[1] if '; ' in a['ar'] else None), delta_arrow='off', delta_color='off')
     c1, c2, c3 = st.columns([0.9, 1.1, 1])
     c1.plotly_chart(gauge(a['Overall Risk (%)'], col), width=STRETCH, key='fp_g')
     c2.plotly_chart(mode_plot(a['Mode Risks']), width=STRETCH, key='fp_m')

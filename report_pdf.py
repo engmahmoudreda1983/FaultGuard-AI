@@ -172,6 +172,15 @@ def incident_pdf(a, rec):
             S.append(P(f"Line re-energised at {pd.Timestamp(rs['time']):%Y-%m-%d %H:%M:%S}, {fg.fmt_dur(rs['after_s'])} after the fault ({rs['device']}: {rs['event']}).", SMALL))
         for n in a.get('notes', []):
             S.append(P(n, SMALL))
+        if len(a.get('records') or []) > 1:
+            R_ = pd.DataFrame(a['records'])[['Record', 'Station', 'Fault Type', 'Location (km)', 'Fault Current (kA)', 'Trip (ms)', 'Breaker (ms)', 'Clearing (ms)', 'Voltages']]
+            S.append(KeepTogether([P('Disturbance records of this incident', H2),
+                                   table([list(R_.columns)] + R_.astype(str).replace({'None': '-', 'nan': '-'}).values.tolist(), [W / len(R_.columns)] * len(R_.columns))]))
+        if a.get('settings_all'):
+            T_ = fg.settings_table(a['settings_all'])
+            T_ = T_[(T_.iloc[:, 1:] != '-').any(axis=1)]
+            S.append(KeepTogether([P('Relay settings used', H2),
+                                   table([list(T_.columns)] + T_.astype(str).values.tolist(), [W * 0.3] + [W * 0.7 / (len(T_.columns) - 1)] * (len(T_.columns) - 1))]))
         rows = [['Channel', 'Pre-fault (rms)', 'Fault (rms)', 'Fault angle']]
         for k in ('IA', 'IB', 'IC', 'IN', 'VA', 'VB', 'VC'):
             if k in a['P']:

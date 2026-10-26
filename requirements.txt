@@ -7,3 +7,6 @@ scikit-learn==1.9.1
 reportlab
 matplotlib
 pypdf
+pytesseract
+pypdfium2
+openpyxl

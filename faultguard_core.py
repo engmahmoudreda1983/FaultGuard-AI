@@ -397,7 +397,7 @@ def parse_event_text(txt):
     starts = 0
     for ln in lines:
         for pat, _ in DT_PATTERNS:
-            if re.match(r'\s*' + WEEKDAY + pat, ln.strip(), re.I):
+            if re.match(r'.{0,25}?' + WEEKDAY + pat, ln.strip(), re.I):
                 starts += 1; break
     block = starts >= 3
     rows = []
@@ -407,7 +407,7 @@ def parse_event_text(txt):
             continue
         hit = None
         for pat, kind in DT_PATTERNS:
-            m = (re.match(r'\s*' + WEEKDAY + pat, s, re.I) if block else re.search(pat, s))
+            m = (re.match(r'.{0,25}?' + WEEKDAY + pat, s, re.I) if block else re.search(pat, s))
             if m:
                 hit = (m, kind); break
         if hit:
@@ -416,7 +416,7 @@ def parse_event_text(txt):
                 ts = _dt(m, kind)
             except (ValueError, AttributeError):
                 continue
-            ev = (s[:m.start()] + ' ' + s[m.end():]).strip(' \t,;|-:')
+            ev = (s[m.end():] if block else (s[:m.start()] + ' ' + s[m.end():])).strip(' \t,;|-:')
             ev = re.sub(r'\s{2,}', '  ', ev)
             if ev:
                 rows.append([ts, ev, []])
@@ -431,36 +431,210 @@ def device_of(txt):
     return m.group(1)[:4].upper() if m else ''
 
 
-def parse_events(data, name=''):
-    """Relay event list from CSV, TXT or PDF: returns Timestamp, Event."""
+IMAGE_EXT = ('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff', '.webp')
+
+
+def _ocr_image(im):
+    """Text from a picture of a printout or a screen (Tesseract). Upscales small pictures for better reading."""
+    import pytesseract
+    from PIL import Image, ImageOps
+    im = ImageOps.exif_transpose(im).convert('L')
+    if im.width < 1800:
+        f = 1800 / im.width
+        im = im.resize((int(im.width * f), int(im.height * f)), Image.LANCZOS)
+    im = ImageOps.autocontrast(im)
+    return pytesseract.image_to_string(im, config='--psm 6')
+
+
+def extract_text(data, name=''):
+    """Plain text of an uploaded file: PDF (text layer, or OCR when scanned), picture (OCR), CSV / TXT, Excel.
+    Returns (text, how) where how says which reader was used."""
     low = name.lower()
     if low.endswith('.pdf') or data[:4] == b'%PDF':
         from pypdf import PdfReader
         r = PdfReader(io.BytesIO(data))
-        txt = '\n'.join((p.extract_text(extraction_mode='layout') or '') for p in r.pages)
-        df = parse_event_text(txt); df.attrs['device'] = device_of(txt)
-        return df
+        pages = [(p.extract_text(extraction_mode='layout') or '') for p in r.pages]
+        txt = '\n'.join(pages)
+        if len(re.sub(r'\s', '', txt)) >= 40 * max(1, len(pages)) * 0.3:
+            return txt, 'PDF text'
+        try:                                    # scanned PDF: render the pages and read them
+            import pypdfium2 as pdfium
+            doc = pdfium.PdfDocument(data)
+            out = []
+            for i in range(min(len(doc), 60)):
+                out.append(_ocr_image(doc[i].render(scale=300 / 72).to_pil()))
+            return '\n'.join(out), 'scanned PDF (OCR)'
+        except Exception as e:
+            return txt, f'PDF text (OCR not available: {e})'
+    if low.endswith(IMAGE_EXT) or data[:8] == b'\x89PNG\r\n\x1a\n' or data[:3] == b'\xff\xd8\xff':
+        from PIL import Image
+        return _ocr_image(Image.open(io.BytesIO(data))), 'picture (OCR)'
+    if low.endswith(('.xlsx', '.xls')):
+        sheets = pd.read_excel(io.BytesIO(data), sheet_name=None, header=None)
+        rows = []
+        for df in sheets.values():
+            for r in df.astype(str).replace('nan', '').values.tolist():
+                rows.append('  '.join(x for x in r if x))
+        return '\n'.join(rows), 'Excel'
     for enc in ('utf-8-sig', 'utf-16', 'cp1252', 'latin-1'):
         try:
-            txt = data.decode(enc); break
+            return data.decode(enc), 'text'
         except Exception:
             continue
-    if low.endswith('.csv') or (txt.count(',') > txt.count('\n') and not low.endswith('.txt')):
-        try:
-            df = pd.read_csv(io.StringIO(txt), sep=None, engine='python')
-            tcols = [c for c in df.columns if re.search(r'time|date|stamp', str(c).lower())]
-            if tcols:
-                ts = pd.to_datetime(df[tcols].astype(str).agg(' '.join, axis=1), errors='coerce', dayfirst=True)
-                other = [c for c in df.columns if c not in tcols]
-                ev = df[other].astype(str).replace('nan', '').agg('  '.join, axis=1).str.strip()
-                out = pd.DataFrame({'Timestamp': ts, 'Event': ev, 'Detail': ''}).dropna(subset=['Timestamp'])
-                out = out[out['Event'] != '']
-                if len(out):
-                    return out.reset_index(drop=True)
-        except Exception:
-            pass
-    df = parse_event_text(txt); df.attrs['device'] = device_of(txt)
+    return '', 'unreadable'
+
+
+def parse_events(data, name=''):
+    """Relay event list from CSV, TXT, PDF (text or scanned), a picture or Excel: returns Timestamp, Event, Detail."""
+    low = name.lower()
+    if low.endswith(('.csv', '.txt')) or not (low.endswith(('.pdf', '.xlsx', '.xls') + IMAGE_EXT)):
+        txt, how = extract_text(data, name)
+        if low.endswith('.csv') or (txt.count(',') > txt.count('\n') and not low.endswith('.txt')):
+            try:
+                df = pd.read_csv(io.StringIO(txt), sep=None, engine='python')
+                tcols = [c for c in df.columns if re.search(r'time|date|stamp', str(c).lower())]
+                if tcols:
+                    ts = pd.to_datetime(df[tcols].astype(str).agg(' '.join, axis=1), errors='coerce', dayfirst=True)
+                    other = [c for c in df.columns if c not in tcols]
+                    ev = df[other].astype(str).replace('nan', '').agg('  '.join, axis=1).str.strip()
+                    out = pd.DataFrame({'Timestamp': ts, 'Event': ev, 'Detail': ''}).dropna(subset=['Timestamp'])
+                    out = out[out['Event'] != '']
+                    if len(out):
+                        out = out.reset_index(drop=True); out.attrs.update({'device': device_of(txt), 'read_as': 'CSV'})
+                        return out
+            except Exception:
+                pass
+    else:
+        txt, how = extract_text(data, name)
+    df = parse_event_text(txt)
+    df.attrs.update({'device': device_of(txt), 'read_as': how})
     return df
+
+
+# ---------------------------------------------------------------- relay settings files
+_NUM = r'([-+]?\d+(?:[.,]\d+)?(?:[eE][-+]?\d+)?)\s*(k|m|M)?\s*(ohms?|Ω|ohm|km|mi|m|%|deg|°|kv|v|ka|a|ms|s)?(?![a-z])'
+SET_KEYS = [
+    ('line_length', r'line\s*length'),
+    ('line_angle', r'line\s*angle'),
+    ('line_z', r'line\s*imped\w*|line\s*z1?\b(?!\s*angle)'),
+    ('kzn_angle', r'k\s*z\s*n\d?\s*(?:res\w*\s*)?ang\w*|k0\s*ang\w*|kz0?\s*ang\w*'),
+    ('kzn', r'k\s*z\s*n\d?\s*(?:res\w*\s*)?(?:comp\w*|magn?\w*|factor)?(?!\s*(?:res\w*\s*)?ang)|residual\s*comp\w*\s*factor|\bk0\b(?!\s*ang)'),
+    ('kzm', r'k\s*z\s*m\s*(?:mutual\s*)?(?:comp\w*|set\w*)?(?!\s*ang)'),
+    ('z1_reach', r'z(?:one)?\s*1\s*(?:ph\w*|gnd|ground|g|p)?\.?\s*reach|z1\s*(?:ph|gnd)?\s*reach'),
+    ('z2_reach', r'z(?:one)?\s*2\s*(?:ph\w*|gnd|ground|g|p)?\.?\s*reach|z2\s*(?:ph|gnd)?\s*reach'),
+    ('z2_time', r't\s*z(?:one)?\s*2\s*(?:ph\w*|gnd|ground)?\.?\s*(?:delay|time)?|z(?:one)?\s*2\s*(?:ph\w*|gnd)?\s*(?:time\s*)?delay'),
+    ('ct_primary', r'(?:phase\s*)?ct\s*prim\w*'),
+    ('ct_secondary', r'(?:phase\s*)?ct\s*sec\w*'),
+    ('vt_primary', r'(?:main\s*)?vt\s*prim\w*'),
+    ('vt_secondary', r'(?:main\s*)?vt\s*sec\w*'),
+]
+SET_LABEL = {'line_length': 'Line length (km)', 'line_z': 'Line impedance (Ω)', 'line_angle': 'Line angle (°)', 'kzn': 'kZN', 'kzn_angle': 'kZN angle (°)',
+             'kzm': 'kZm', 'z1_reach': 'Zone 1 reach', 'z2_reach': 'Zone 2 reach', 'z2_time': 'Zone 2 time (ms)', 'ct_primary': 'CT primary (A)',
+             'ct_secondary': 'CT secondary (A)', 'vt_primary': 'VT primary (V)', 'vt_secondary': 'VT secondary (V)', 'values_in': 'Setting values',
+             'auto_reclose': 'Auto-reclose', 'device': 'Relay', 'description': 'Description'}
+
+
+def _num_unit(text):
+    m = re.search(_NUM, text, re.I)
+    if not m:
+        return None, None
+    v = float(m.group(1).replace(',', '.'))
+    pre, u = (m.group(2) or ''), (m.group(3) or '').lower()
+    if pre == 'k':
+        v *= 1000
+    elif pre == 'm' and u not in ('', 'm'):
+        v /= 1000
+    elif pre == 'M':
+        v *= 1e6
+    return v, u
+
+
+def parse_settings(text):
+    """Line and protection settings from a relay settings export (text, PDF text or OCR). Tolerant of layouts:
+    'Line Length   120.0 km', '0C01 Line Length: 120.0km', 'kZN Res Comp 800.0E-3' ..."""
+    out = {'device': device_of(text)}
+    m = re.search(r'description\s*[:=]?\s*(.+)', text, re.I)
+    if m:
+        out['description'] = m.group(1).strip()[:60]
+    m = re.search(r'setting\s*values\s*[:=]?\s*(primary|secondary)', text, re.I)
+    if m:
+        out['values_in'] = m.group(1).title()
+    m = re.search(r'auto[\s\-]*reclos\w*\s*(?:mode|status)?\s*[:=]?\s*(enabled|disabled|in\s*service|out\s*of\s*service|on|off)\b', text, re.I)
+    if m:
+        out['auto_reclose'] = 'In service' if m.group(1).lower() in ('enabled', 'on', 'in service', 'inservice') else 'Out of service'
+    for ln in text.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        for key, pat in SET_KEYS:
+            if key in out:
+                continue
+            m = re.search(r'(?:^|[\s:.\d])(' + pat + r')\s*[:=]?\s*', s, re.I)
+            if not m:
+                continue
+            v, u = _num_unit(s[m.end():])
+            if v is None:
+                continue
+            if key == 'line_length':
+                v = v * 1.609 if u == 'mi' else (v / 1000 if u == 'm' and v > 2000 else v)
+            if key == 'z2_time':
+                v = v * 1000 if (u == 's' or (not u and v < 5)) else v
+            if key in ('z1_reach', 'z2_reach'):
+                out[key + '_unit'] = '%' if u == '%' else 'ohm'
+            if key in ('kzn',) and v > 5:            # a percentage written without a unit
+                v = v / 100
+            out[key] = v
+            break
+    return out
+
+
+def settings_line(sts, ct=None, vt=None):
+    """Line data (per-km Z1/Z0) and protection settings from the parsed settings of one relay. Returns (line, setting, notes)."""
+    line, setg, notes = {}, {}, []
+    L = sts.get('line_length')
+    if L:
+        line['length_km'] = float(L)
+    ctr = (sts['ct_primary'] / sts['ct_secondary']) if sts.get('ct_primary') and sts.get('ct_secondary') else ct
+    vtr = (sts['vt_primary'] / sts['vt_secondary']) if sts.get('vt_primary') and sts.get('vt_secondary') else vt
+    if sts.get('vt_primary'):
+        line['kv'] = sts['vt_primary'] / 1000 if sts['vt_primary'] > 1000 else sts['vt_primary']
+    Zl = sts.get('line_z')
+    if Zl and L:
+        if sts.get('values_in') == 'Secondary':
+            if ctr and vtr:
+                Zl = Zl * vtr / ctr; notes.append(f"Line impedance converted from secondary with CT {ctr:g} and VT {vtr:g}.")
+            else:
+                notes.append('Line impedance is in secondary ohms but the CT/VT ratios were not found: enter them under settings.')
+        ang = np.radians(sts.get('line_angle', 85.0))
+        z1 = Zl / L * np.exp(1j * ang)
+        k = sts.get('kzn', 1.0 / 3 * 2)
+        z0 = z1 * (1 + 3 * k * np.exp(1j * np.radians(sts.get('kzn_angle', 0.0))))
+        line.update({'r1': float(z1.real), 'x1': float(z1.imag), 'r0': float(z0.real), 'x0': float(z0.imag)})
+        if 'kzn' not in sts:
+            notes.append('kZN not found in the settings: 0.67 assumed.')
+    for z in ('z1', 'z2'):
+        r = sts.get(z + '_reach')
+        if r:
+            if sts.get(z + '_reach_unit') == '%':
+                setg[z + '_reach'] = r / 100
+            elif Zl:
+                setg[z + '_reach'] = r / sts['line_z']          # same base (primary or secondary) as the line impedance
+    if sts.get('z2_time'):
+        setg['z2_time_ms'] = float(sts['z2_time'])
+    if sts.get('auto_reclose'):
+        setg['ar_expected'] = sts['auto_reclose'] == 'In service'
+    if ctr:
+        setg['_ct'] = ctr
+    if vtr:
+        setg['_vt'] = vtr
+    return line, setg, notes
+
+
+def best_settings(all_sts):
+    """The settings file that carries the line data (normally the distance relay)."""
+    score = lambda s: sum(k in s for k in ('line_length', 'line_z', 'line_angle', 'kzn', 'z1_reach')) * 10 + len(s)
+    return max(all_sts, key=lambda kv: score(kv[1])) if all_sts else None
+
 
 
 def event_values(ev):
@@ -585,7 +759,7 @@ def analyze(rec, events=None, line=None, setting=None, model=None, scale='Auto',
     """Full analysis of one incident. setting: expected times and ratings."""
     line = dict(DEFAULT_LINE, **(line or {}))
     st = {'expected_inst_ms': 40.0, 'cb_rated_ms': 50.0, 'critical_ms': 120.0, 'cb_rating_ka': 50.0, 'z1_reach': 0.8, 'z2_reach': 1.2,
-          'z2_time_ms': 400.0, 'ar_expected': True}
+          'z2_time_ms': 400.0, 'ar_expected': False}
     st.update(setting or {})
     meta = dict(meta or {})
     A = scale_primary(rec, scale, ct, vt)
@@ -676,7 +850,7 @@ def fmt_dur(sec):
 
 def on_items(detail):
     """Names of the bits reported ON in an event's detail lines ('10 L11 Foc 3ph TrP : ON')."""
-    return [re.sub(r'^\d+\s+', '', m.strip()) for m in re.findall(r'^\s*\d+\s+([^:\n]+?)\s*:\s*ON\s*$', str(detail or ''), re.M)]
+    return [re.sub(r'^\d+\s+', '', m.strip()) for m in re.findall(r'^.{0,12}?\b\d{1,2}\.?\s*([A-Za-z][^:\n]*?)\s*:\s*ON\s*$', str(detail or ''), re.M)]
 
 
 def _as_list(events):
@@ -692,14 +866,17 @@ def finish(out, rec, events, st):
     t0 = out.get('record_start')
     dur = float(rec['t'][-1] - rec['t'][0])
     parts, reports, clock = [], {}, {}
-    for name, ev in _as_list(events):
+    groups = {}
+    for name, ev in _as_list(events):           # several files of the same relay (PDF pages, pictures) are merged
         dev = getattr(ev, 'attrs', {}).get('device') or name
-        if dev in reports:
-            dev = f"{dev} ({name})"
         e = ev.copy()
         if 'Detail' not in e:
             e['Detail'] = ''
         e['Timestamp'] = pd.to_datetime(e['Timestamp'])
+        groups.setdefault(dev, []).append(e)
+    for dev, lst in groups.items():
+        e = pd.concat(lst, ignore_index=True)
+        e = e.drop_duplicates(subset=['Timestamp', 'Event']).sort_values('Timestamp', kind='stable').reset_index(drop=True)
         e, sh = align_events(e, t0, dur)
         e['Device'] = dev
         vals = event_values(e)
@@ -801,13 +978,19 @@ def finish(out, rec, events, st):
     else:
         evs = ' '.join(E['Event'].astype(str).str.lower()) if E is not None else ''
         init = bool(re.search(r'ar\s*init|79\s*init|reclos\w*\s*init', evs))
-        out['ar'] = 'Lockout' if 'lockout' in evs else (('Initiated, no reclose' if init else 'Not attempted / not in record') if intr is not None
-                                                          else 'Fault not cleared in the record')
+        if 'lockout' in evs:
+            out['ar'] = 'Lockout'
+        elif intr is None:
+            out['ar'] = 'Fault not cleared in the record'
+        elif not st.get('ar_expected'):
+            out['ar'] = 'Out of service (external auto-recloser off)'
+        else:
+            out['ar'] = 'Initiated, no reclose' if init else 'Not attempted / not in record'
         out['ar_initiated'] = init
         out['dead_time_ms'] = None
         rs = out.get('restored')
         if rs and intr is not None:
-            out['ar'] += ' (line re-energised ' + fmt_dur(rs['after_s']) + ' later)'
+            out['ar'] += '; line re-energised ' + fmt_dur(rs['after_s']) + ' later'
     if out['ar'].startswith('Unsuccessful') is False and E is not None:
         evs = ' '.join(E['Event'].astype(str).str.lower())
         if re.search(r'ar\s*(unsuccess|fail)|lockout', evs) and out['ar'].startswith('Successful'):
@@ -945,6 +1128,10 @@ def assess(out, st):
                          ' Confirm whether auto-reclose is in service on this line, check the AR relay / bay controller, and confirm the fault was transient (line patrol).')
             else:
                 w.append(f"No reclosing seen for a single-phase fault ({ar.lower()}): check the auto-reclose scheme, or the record is too short.")
+        elif not st['ar_expected']:
+            rs = out.get('restored')
+            w.append('Auto-reclose not assessed: the external auto-recloser is kept out of service' +
+                     (f"; the line was re-energised {fmt_dur(rs['after_s'])} after the fault ({rs['device']}: {rs['event']})." if rs else '.'))
         else:
             w.append(f"Auto-reclose: {ar.lower()}" + (' (normally blocked for multi-phase faults).' if out['type'] in ('ABC',) else '.'))
     R['Permanent fault'] = s; why['Permanent fault'] = w
@@ -1352,3 +1539,110 @@ def load_model(path='faultguard_model.pkl'):
             return pickle.load(f)
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------- one incident from many relays
+def _seq(P, kind, idx, which=1):
+    ks = [kind + p for p in 'ABC']
+    if not all(k in P for k in ks):
+        return None
+    return (AINV @ np.array([P[k][which] for k in ks]))[idx]
+
+
+def two_ended_location(aS, aR, line):
+    """Unsynchronised two-ended location from the negative-sequence (unbalanced faults) or superimposed positive-sequence
+    phasors of the two line ends: |V_S - m Z I_S| = |V_R - (1 - m) Z I_R|. Independent of fault resistance and infeed."""
+    PS, PR = aS.get('P') or {}, aR.get('P') or {}
+    L = line['length_km']; Z = complex(line['r1'], line['x1']) * L
+    if aS.get('type') == 'ABC':
+        VS, IS = _seq(PS, 'V', 1) - _seq(PS, 'V', 1, 0), _seq(PS, 'I', 1) - _seq(PS, 'I', 1, 0)
+        VR, IR = _seq(PR, 'V', 1) - _seq(PR, 'V', 1, 0), _seq(PR, 'I', 1) - _seq(PR, 'I', 1, 0)
+    else:
+        VS, IS, VR, IR = _seq(PS, 'V', 2), _seq(PS, 'I', 2), _seq(PR, 'V', 2), _seq(PR, 'I', 2)
+    if any(x is None for x in (VS, IS, VR, IR)):
+        return None
+    A, B = VS, Z * IS                       # |A - m B|^2
+    C, D = VR - Z * IR, Z * IR              # |C + m D|^2
+    a2 = abs(B) ** 2 - abs(D) ** 2
+    a1 = -2 * (A * B.conjugate()).real - 2 * (C * D.conjugate()).real
+    a0 = abs(A) ** 2 - abs(C) ** 2
+    roots = [a0 / -a1] if abs(a2) < 1e-12 else list(np.roots([a2, a1, a0]))
+    ok = [float(r.real) for r in np.atleast_1d(roots) if abs(np.imag(r)) < 1e-6 and -0.1 <= np.real(r) <= 1.1]
+    if not ok:
+        return None
+    m = min(ok, key=lambda r: abs(r - 0.5))
+    return m * L
+
+
+def record_summary(name, a):
+    f0 = lambda v: None if v is None else round(float(v), 1)
+    return {'Record': name, 'Station': (a.get('station') or '-'), 'Device': (a.get('device') or '-'),
+            'Fault Type': a.get('type', '-') if a.get('fault') else 'No fault', 'AI Confidence (%)': round(a.get('type_conf', 0) * 100) if a.get('fault') else None,
+            'Location (km)': f0(a.get('loc_km')), 'Fault Current (kA)': f0(a.get('I_fault_max_kA')), 'Trip (ms)': f0(a.get('operate_ms')),
+            'Breaker (ms)': f0(a.get('breaker_ms')), 'Clearing (ms)': f0(a.get('clearing_ms')),
+            'Voltages': 'yes' if all(a.get('channels', {}).get(k) is not None for k in ('VA', 'VB', 'VC')) else 'no',
+            'Status': ('TEST' if a.get('likely_test') else a.get('Status'))}
+
+
+def analyze_incident(records, events=None, settings=None, line=None, setting=None, model=None, scale='Auto', ct=1.0, vt=1.0, meta=None,
+                     use_settings=True):
+    """One incident from any number of disturbance records, event lists and settings files.
+    records: [(name, rec)], events: [(name, DataFrame)], settings: [(name, parsed dict)].
+    Returns (analysis of the main record with the merged view, main record)."""
+    line = dict(line or {}); setting = dict(setting or {}); notes = []
+    sts = [(n, s) for n, s in (settings or []) if s]
+    used = best_settings(sts) if (sts and use_settings) else None
+    if used:
+        ls, ss, nn = settings_line(used[1], ct, vt)
+        line.update(ls); notes += nn
+        ctr, vtr = ss.pop('_ct', None), ss.pop('_vt', None)
+        setting.update(ss)
+        if scale == 'Secondary' and ctr and vtr:
+            ct, vt = ctr, vtr
+        notes.append(f"Line data and settings taken from {used[1].get('device') or used[0]} settings ({used[0]}).")
+        # consistency between the relays' settings
+        for k, lab in (('line_length', 'line length'), ('line_z', 'line impedance'), ('line_angle', 'line angle'), ('kzn', 'kZN')):
+            vals = {(s.get('device') or n): s[k] for n, s in sts if s.get(k) is not None}
+            if len(vals) > 1 and (max(vals.values()) - min(vals.values())) > 0.02 * max(abs(v) for v in vals.values()):
+                notes.append(f"The relays have different {lab} settings: " + ', '.join(f"{d} {v:g}" for d, v in vals.items()) + '. Check which one is correct.')
+    res = []
+    for name, rec in records:
+        a = analyze(rec, events, line, setting, model=model, scale=scale, ct=ct, vt=vt, meta=meta)
+        a['station'] = (rec.get('station') or '').strip(); a['device'] = (rec.get('device') or '').strip(); a['record_name'] = name
+        res.append((name, rec, a))
+    if not res:
+        raise ValueError('No disturbance record.')
+    score = lambda x: (bool(x[2].get('fault')), not x[2].get('likely_test'),
+                       sum(x[2]['channels'].get(k) is not None for k in ('IA', 'IB', 'IC', 'VA', 'VB', 'VC', 'IN')), len(x[1]['digital']))
+    name, rec, a = max(res, key=score)
+    a['records'] = [record_summary(n, x) for n, _, x in res]
+    a['settings_all'] = sts; a['settings_used'] = used
+    a['notes'] = notes + a.get('notes', [])
+    # records from the other line end: two-ended location
+    others = [x for n, _, x in res if x is not a and x.get('fault') and x.get('station') and x['station'].lower() != (a.get('station') or '').lower()]
+    if others and a.get('fault'):
+        d = two_ended_location(a, others[0], a['line'])
+        if d is not None:
+            a['loc_two_ended_km'] = d
+            a['notes'].append(f"Two-ended location (records from {a['station']} and {others[0]['station']}): {d:.1f} km from {a['station']} "
+                              f"({d / a['line']['length_km'] * 100:.0f}% of the line); not affected by fault resistance or infeed.")
+    # differences between the records of the same incident
+    types = {x['Fault Type'] for x in a['records'] if x['Fault Type'] not in ('No fault',)}
+    if len(types) > 1:
+        a['notes'].append('The records disagree on the fault type (' + ', '.join(sorted(types)) + '): check the channel mapping of each record.')
+    return a, rec
+
+
+def settings_table(sts):
+    rows = []
+    keys = ['device', 'description', 'line_length', 'line_z', 'line_angle', 'kzn', 'kzn_angle', 'kzm', 'z1_reach', 'z2_reach', 'z2_time',
+            'ct_primary', 'ct_secondary', 'vt_primary', 'vt_secondary', 'values_in', 'auto_reclose']
+    for k in keys:
+        r = {'Setting': SET_LABEL.get(k, k)}
+        for n, sv in sts:
+            v = sv.get(k)
+            if k in ('z1_reach', 'z2_reach') and v is not None:
+                v = f"{v:g} {'%' if sv.get(k + '_unit') == '%' else 'Ω'}"
+            r[sv.get('device') or n] = '-' if v is None else (f"{v:g}" if isinstance(v, float) else str(v))
+        rows.append(r)
+    return pd.DataFrame(rows)
