@@ -129,10 +129,8 @@ def wave_fig(rec, a, width=10, height=5.4):
 def rx_fig(a, width=5.2, height=4.4):
     line = a['line']; st = a['setting']; Z = complex(line['r1'], line['x1']) * line['length_km']
     fig, ax = plt.subplots(figsize=(width, height))
-    th = np.linspace(0, 2 * np.pi, 200)
-    for reach, col, lab in [(st['z1_reach'], RED, 'Zone 1'), (st['z2_reach'], AMBER, 'Zone 2')]:
-        c = Z * reach / 2
-        ax.plot(c.real + abs(c) * np.cos(th), c.imag + abs(c) * np.sin(th), color=col, lw=1, label=f"{lab} ({reach * 100:.0f}%)")
+    for lab, col, xs, ys, kind in fg.zone_shapes(a):
+        ax.plot(xs, ys, color=col, lw=1, label=lab)
     ax.plot([0, Z.real], [0, Z.imag], color='#555', lw=1.5, label='Line impedance')
     z = a.get('traj')
     if z is not None:
@@ -141,8 +139,9 @@ def rx_fig(a, width=5.2, height=4.4):
         ax.plot(z.real, z.imag, '.', ms=2.5, color=NAVYH, label='Apparent impedance')
     if a.get('Zapp') is not None:
         ax.plot(a['Zapp'].real, a['Zapp'].imag, 'o', color=RED, ms=6, label='At the fault')
-    lim = 1.5 * abs(Z) * st['z2_reach']
-    ax.set_xlim(-0.5 * lim, lim); ax.set_ylim(-0.3 * lim, 1.1 * lim); ax.set_aspect('equal')
+    ext = [max(max(xs), max(ys)) for _, _, xs, ys, _ in fg.zone_shapes(a)]
+    lim = max([1.5 * abs(Z) * st['z2_reach']] + [e * 1.1 for e in ext])
+    ax.set_xlim(-0.35 * lim, lim); ax.set_ylim(-0.35 * lim, 1.05 * lim); ax.set_aspect('equal')
     ax.set_xlabel('R (ohm primary)'); ax.set_ylabel('X (ohm primary)'); ax.grid(alpha=.25); ax.legend(fontsize=7, loc='lower right', frameon=False)
     return fig
 
