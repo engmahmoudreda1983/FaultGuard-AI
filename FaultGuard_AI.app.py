@@ -712,12 +712,13 @@ def stats_page(R):
 # ==========================================
 # --- 8. Tabs ---
 # ==========================================
-tabs = st.tabs(["🏭 Incidents Overview", "⚡ Incident Analysis", "🧠 AI Fault Classifier & Accuracy", "📄 Combined Report", "📈 Incident Statistics"])
+tabs = st.tabs(["🏭 Incidents Overview", "⚡ Incident Analysis", "📄 Combined Report", "📈 Incident Statistics", "🧠 AI Model Accuracy"])
+T_OV, T_AN, T_REP, T_STAT, T_AI = tabs
 
 OV_COLS = ['Incident', 'Date', 'Line', 'Fault Type', 'Location', 'Fault Current (kA)', 'Protection', 'Operate (ms)', 'Breaker (ms)', 'Clearing (ms)',
            'Auto-Reclose', 'Governing Aspect', 'Overall Risk (%)', 'Status', 'RPN', 'RPN Level', 'Source', 'Action']
 
-with tabs[0]:
+with T_OV:
     st.radio("Show", [SRC_PAGES, SRC_DEMO], horizontal=True, key='ov_src')
     R0 = current_records()
     if st.session_state['ov_src'] == SRC_PAGES:
@@ -779,12 +780,12 @@ with tabs[0]:
         st.download_button("📥 Download incident list (CSV)", R[OV_COLS].to_csv(index=False).encode('utf-8-sig'),
                            f"FaultGuard_incidents_{datetime.now():%Y%m%d}.csv", 'text/csv')
 
-with tabs[1]:
+with T_AN:
     analysis_page()
-with tabs[2]:
+with T_AI:
     model_page()
 
-with tabs[3]:
+with T_REP:
     recs = current_records()
     if not recs:
         st.markdown("<h3 style='text-align:center;color:#888;margin-top:40px'>💡 Analyze incidents on the Incident Analysis page "
@@ -843,7 +844,7 @@ with tabs[3]:
         d[2].download_button("📥 Download Table (CSV)", R[OV_COLS].to_csv(index=False).encode('utf-8-sig'), f"FaultGuard_Report_{datetime.now():%Y%m%d}.csv", 'text/csv')
         d[3].download_button("📥 Download FMEA (CSV)", fm.to_csv(index=False).encode('utf-8-sig'), f"FaultGuard_FMEA_{datetime.now():%Y%m%d}.csv", 'text/csv')
 
-with tabs[4]:
+with T_STAT:
     recs = current_records()
     st.markdown("<div class='pg-note'>Fault statistics over all analyzed incidents (source chosen on the Overview page): by line, type and month, "
                 "auto-reclose success and repeated faults at the same place. Test records are excluded.</div>", unsafe_allow_html=True)

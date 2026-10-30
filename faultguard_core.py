@@ -1081,6 +1081,21 @@ def assess(out, st):
                          f"without delay by the aided scheme / line differential instead of waiting for zone 2.")
             elif st['z1_reach'] < loc <= 1.05 and any('zone 1' in e.lower() for e in elems):
                 s = max(s, 40.0); w.append(f"Zone 1 tripped for a fault at {loc * 100:.0f}% of the line, at or beyond its {st['z1_reach'] * 100:.0f}% reach: check the reach setting and the line data.")
+    zs = zone_seen(out)
+    out['zone_seen'] = zs
+    if zs is not None and out.get('Zapp') is not None:
+        zt = f"R {out['Zapp'].real:.1f} Ω, X {out['Zapp'].imag:.1f} Ω"
+        z1_trip = any('zone 1' in e.lower() for e in elems)
+        if zs == 0:
+            w.append(f"The impedance seen at the fault ({zt}) is outside all distance zones.")
+            if any(re.search(r'zone [123]', e.lower()) for e in elems) and (st.get('r_ph') or st.get('r_gnd')):
+                s = max(s, 45.0); w.append('A distance zone tripped although the impedance is outside every zone set in the relay: check the settings used and the VT/CT circuits.')
+        else:
+            w.append(f"The impedance seen at the fault ({zt}) lies inside zone {zs}" + (' (outside zone 1).' if zs > 1 else '.'))
+            if zs == 1 and not inst:
+                s = max(s, 70.0); w.append('The impedance entered zone 1 but no instantaneous trip followed: zone 1 FAILED TO OPERATE. Test the relay.')
+            elif zs > 1 and z1_trip:
+                s = max(s, 80.0); w.append(f"Zone 1 tripped although the impedance stayed in zone {zs}: zone 1 OVER-REACH. Check the zone 1 reach and kZN settings.")
     if out.get('three_pole_trip') and out['type'] in ('AG', 'BG', 'CG'):
         w.append('Three-pole trip for a single-phase fault (forced three-pole trip, three-pole AR mode or single-pole tripping not in service).')
     rv = out.get('relay_reports', {})
@@ -1706,7 +1721,7 @@ def zone_shapes(a):
         if not reach:
             continue
         if char == 'quad':
-            R = Rr[i] if i < len(Rr) and Rr[i] else 0.5 * abs(Z) * reach
+            R = Rr[i] if i < len(Rr) and Rr[i] else 2.0 * abs(Z)          # typical resistive reach when not set
             P = Z * reach
             top_d = np.exp(1j * np.radians(st.get('tilt_deg', -3.0)))
             side_d = np.exp(1j * ang)
@@ -1722,3 +1737,17 @@ def zone_shapes(a):
             c = Z * reach / 2
             out.append((f"{lab} ({reach * 100:.0f}%)", col, list(c.real + abs(c) * np.cos(th)), list(c.imag + abs(c) * np.sin(th)), 'mho'))
     return out[::-1]                            # outer zones first, so zone 1 is drawn on top
+
+
+def zone_seen(a):
+    """Innermost distance zone (1, 2, 3) that contains the apparent impedance at the fault; 0 = outside all; None = unknown."""
+    if a.get('Zapp') is None or not np.isfinite(a['Zapp']):
+        return None
+    from matplotlib.path import Path
+    shapes = zone_shapes(a)[::-1]                # zone 1 first
+    if not shapes:
+        return None
+    for lab, _, xs, ys, _ in shapes:
+        if Path(np.column_stack([xs, ys])).contains_point((a['Zapp'].real, a['Zapp'].imag)):
+            return int(re.search(r'Zone (\d)', lab).group(1))
+    return 0
