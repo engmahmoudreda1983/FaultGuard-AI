@@ -1057,6 +1057,9 @@ def assess(out, st):
                 s = max(s, 90.0); w.append(f"The fault is located beyond the remote end ({loc * 100:.0f}% of the line) but zone 1 tripped: OVER-REACH / mal-operation. The fault was external to this line.")
             elif loc > 1.05 and inst:
                 s = max(s, 55.0); w.append(f"The fault is located beyond the remote end ({loc * 100:.0f}% of the line): check whether the instantaneous trip was correct (aided scheme / intertrip).")
+            elif st['z1_reach'] < loc <= 1.05 and inst and not any('zone 1' in e.lower() for e in elems):
+                w.append(f"The fault is at {loc * 100:.0f}% of the line, beyond the zone 1 reach ({st['z1_reach'] * 100:.0f}%): correctly cleared "
+                         f"without delay by the aided scheme / line differential instead of waiting for zone 2.")
             elif st['z1_reach'] < loc <= 1.05 and any('zone 1' in e.lower() for e in elems):
                 s = max(s, 40.0); w.append(f"Zone 1 tripped for a fault at {loc * 100:.0f}% of the line, at or beyond its {st['z1_reach'] * 100:.0f}% reach: check the reach setting and the line data.")
     if out.get('three_pole_trip') and out['type'] in ('AG', 'BG', 'CG'):
@@ -1068,11 +1071,23 @@ def assess(out, st):
     if not out.get('type_agree', True):
         w.append(f"The AI fault type ({out['type_ai']}) and the classic phase selection ({out['type_rule']}) disagree: confirm the faulted phases from the waveforms.")
     R['Protection operation'] = s; why['Protection operation'] = w
+    rel = {}
     for dev, v in out.get('relay_reports', {}).items():
         m_ = re.match(r'(-?\d+(?:\.\d+)?)\s*km', str(v.get('Relay Fault Location', '')))
-        if m_ and out.get('loc_km') is not None and abs(float(m_.group(1)) - out['loc_km']) > max(3.0, 0.08 * out['line']['length_km']):
-            out['notes'].append(f"FaultGuard location {out['loc_km']:.1f} km differs from {dev} ({m_.group(1)} km): check the line data entered "
-                                f"(length, R1/X1, R0/X0 or the relay kZN); mutual coupling of a parallel circuit and remote infeed through fault resistance also affect earth-fault location.")
+        if m_:
+            rel[dev] = float(m_.group(1))
+    if rel and out.get('loc_km') is not None:
+        tol = max(3.0, 0.05 * out['line']['length_km'])
+        diffs = {d: out['loc_km'] - x for d, x in rel.items()}
+        txt = ', '.join(f"{d} {x:.1f} km" for d, x in rel.items())
+        if all(abs(x) > tol for x in diffs.values()):
+            out['notes'].append(f"FaultGuard location {out['loc_km']:.1f} km differs from the relays ({txt}): check the line data "
+                                f"(length, line impedance and angle, kZN); mutual coupling of a parallel circuit and remote infeed through fault "
+                                f"resistance also affect earth-fault location.")
+        else:
+            best = min(diffs, key=lambda d: abs(diffs[d]))
+            out['notes'].append(f"Fault location: FaultGuard {out['loc_km']:.1f} km; relays {txt}. Closest to {best} "
+                                f"(difference {abs(diffs[best]):.1f} km, {abs(diffs[best]) / out['line']['length_km'] * 100:.1f}% of the line).")
     # breaker
     s, w = 0.0, []
     bt = out.get('breaker_ms')
