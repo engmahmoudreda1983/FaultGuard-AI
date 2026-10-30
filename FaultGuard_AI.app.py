@@ -266,12 +266,11 @@ def wave_plot(rec, a, height=620):
 def rx_plot(a, height=480):
     line, stt = a['line'], a['setting']
     Z = complex(line['r1'], line['x1']) * line['length_km']
-    th = np.linspace(0, 2 * np.pi, 200)
     fig = go.Figure()
-    for reach, col, lab in [(stt['z1_reach'], RED, 'Zone 1'), (stt['z2_reach'], AMBER, 'Zone 2')]:
-        c = Z * reach / 2
-        fig.add_scatter(x=c.real + abs(c) * np.cos(th), y=c.imag + abs(c) * np.sin(th), mode='lines', name=f"{lab} ({reach * 100:.0f}%)",
-                        line=dict(color=col, width=1.5), hoverinfo='skip')
+    shapes = fg.zone_shapes(a)
+    for lab, col, xs, ys, kind in shapes:
+        fig.add_scatter(x=xs, y=ys, mode='lines', name=lab, line=dict(color=col, width=1.5), hoverinfo='skip')
+    char = shapes[0][4] if shapes else 'mho'
     fig.add_scatter(x=[0, Z.real], y=[0, Z.imag], mode='lines', name='Line impedance', line=dict(color='#555', width=2.5))
     z = a.get('traj')
     if z is not None and len(z):
@@ -281,9 +280,9 @@ def rx_plot(a, height=480):
                         hovertemplate='R %{x:.1f} Ω, X %{y:.1f} Ω<extra></extra>')
     if a.get('Zapp') is not None:
         fig.add_scatter(x=[a['Zapp'].real], y=[a['Zapp'].imag], mode='markers', name='At the fault', marker=dict(size=13, color=RED, symbol='x'))
-    lim = 1.5 * abs(Z) * stt['z2_reach']
-    fig.update_layout(title='Impedance seen by the relay (R-X, primary Ω)', height=height, xaxis=dict(range=[-0.5 * lim, lim], title='R (Ω)'),
-                      yaxis=dict(range=[-0.3 * lim, 1.1 * lim], title='X (Ω)', scaleanchor='x'), legend=dict(orientation='h', y=-0.18),
+    lim = max([1.5 * abs(Z) * stt['z2_reach']] + [max(max(xs), max(ys)) * 1.1 for _, _, xs, ys, _ in shapes])
+    fig.update_layout(title=f"Impedance seen by the relay (R-X, primary Ω) · {'quadrilateral' if char == 'quad' else 'mho'} zones", height=height, xaxis=dict(range=[-0.35 * lim, lim], title='R (Ω)'),
+                      yaxis=dict(range=[-0.35 * lim, 1.05 * lim], title='X (Ω)', scaleanchor='x'), legend=dict(orientation='h', y=-0.18),
                       margin=dict(l=50, r=10, t=45, b=40))
     return fig
 
@@ -476,6 +475,7 @@ def analysis_page():
         c[1].number_input("Critical clearing time (ms)", 60.0, 500.0, step=10.0, key='st_critical_ms')
         c[2].number_input("Breaker rating (kA)", 10.0, 80.0, step=1.0, key='st_cb_rating_ka')
         c[3].checkbox("Auto-reclose in service (normally off: external recloser)", False, key='st_ar')
+        st.selectbox("Distance zone shape (used when no settings file gives it)", ['Quadrilateral', 'Mho'], key='st_char')
         c = st.columns(3)
         c[0].selectbox("Record values are", ['Auto', 'Primary', 'Secondary'], key='scale',
                        help="Auto: use the COMTRADE primary/secondary flag and ratios. Secondary: multiply by the CT and VT ratios below.")
@@ -506,6 +506,7 @@ def analysis_page():
             line = {k: float(ss['ln_' + k]) for k, _, _ in LINE_KEYS}
             setting = {k: float(ss['st_' + k]) for k in SET_DEF}
             setting['z1_reach'] /= 100; setting['z2_reach'] /= 100; setting['ar_expected'] = bool(ss['st_ar'])
+            setting['char_ph'] = setting['char_gnd'] = 'quad' if ss.get('st_char', 'Quadrilateral') == 'Quadrilateral' else 'mho'
             meta = {'Incident': ss['inc_id'] or rec_name, 'Station': ss['inc_station'] or (rec.get('station') or '').title(),
                     'Line': ss['inc_line'] or (rec.get('device') or '').title(), 'Relay': ss['inc_relay'] or (rec.get('device') or '').title(),
                     'Date': str(rec.get('start'))[:19] if rec.get('start') else ''}

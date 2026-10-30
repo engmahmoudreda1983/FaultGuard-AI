@@ -522,6 +522,10 @@ SET_KEYS = [
     ('kzm', r'k\s*z\s*m\s*(?:mutual\s*)?(?:comp\w*|set\w*)?(?!\s*ang)'),
     ('z1_reach', r'z(?:one)?\s*1\s*(?:ph\w*|gnd|ground|g|p)?\.?\s*reach|z1\s*(?:ph|gnd)?\s*reach'),
     ('z2_reach', r'z(?:one)?\s*2\s*(?:ph\w*|gnd|ground|g|p)?\.?\s*reach|z2\s*(?:ph|gnd)?\s*reach'),
+    ('z3_reach', r'z(?:one)?\s*3\s*(?:ph\w*|gnd|ground|g|p)?\.?\s*reach|z3\s*(?:ph|gnd)?\s*reach'),
+    ('r1_ph', r'r\s*1\s*ph\w*\.?\s*res\w*'), ('r2_ph', r'r\s*2\s*ph\w*\.?\s*res\w*'), ('r3_ph', r'r\s*3\s*ph\w*\.?\s*res\w*'),
+    ('r1_gnd', r'r\s*1\s*g(?:n)?d\w*\.?\s*res\w*'), ('r2_gnd', r'r\s*2\s*g(?:n)?d\w*\.?\s*res\w*'), ('r3_gnd', r'r\s*3\s*g(?:n)?d\w*\.?\s*res\w*'),
+    ('tilt', r'z\s*1\s*tilt\w*(?:\s*top\s*line)?'),
     ('z2_time', r't\s*z(?:one)?\s*2\s*(?:ph\w*|gnd|ground)?\.?\s*(?:delay|time)?|z(?:one)?\s*2\s*(?:ph\w*|gnd)?\s*(?:time\s*)?delay'),
     ('ct_primary', r'(?:phase\s*)?ct\s*prim\w*'),
     ('ct_secondary', r'(?:phase\s*)?ct\s*sec\w*'),
@@ -556,6 +560,10 @@ def parse_settings(text):
     m = re.search(r'description\s*[:=]?\s*(.+)', text, re.I)
     if m:
         out['description'] = m.group(1).strip()[:60]
+    for k, pat in (('char_ph', r'phase\s*char\w*\.?\s*[:=]?\s*(quad\w*|mho)'), ('char_gnd', r'(?:ground|gnd|earth)\s*char\w*\.?\s*[:=]?\s*(quad\w*|mho)')):
+        m = re.search(pat, text, re.I)
+        if m:
+            out[k] = 'quad' if m.group(1).lower().startswith('quad') else 'mho'
     m = re.search(r'setting\s*values\s*[:=]?\s*(primary|secondary)', text, re.I)
     if m:
         out['values_in'] = m.group(1).title()
@@ -621,6 +629,17 @@ def settings_line(sts, ct=None, vt=None):
                 setg[z + '_reach'] = r / sts['line_z']          # same base (primary or secondary) as the line impedance
     if sts.get('z2_time'):
         setg['z2_time_ms'] = float(sts['z2_time'])
+    k = (vtr / ctr) if (sts.get('values_in') == 'Secondary' and ctr and vtr) else 1.0
+    if sts.get('z3_reach') and sts.get('line_z'):
+        setg['z3_reach'] = sts['z3_reach'] / 100 if sts.get('z3_reach_unit') == '%' else sts['z3_reach'] / sts['line_z']
+    for kind in ('ph', 'gnd'):
+        if sts.get('char_' + kind):
+            setg['char_' + kind] = sts['char_' + kind]
+        rr = [sts.get(f'r{i}_{kind}') for i in (1, 2, 3)]
+        if any(x is not None for x in rr):
+            setg['r_' + kind] = [None if x is None else float(x) * k for x in rr]
+    if sts.get('tilt') is not None:
+        setg['tilt_deg'] = float(sts['tilt'])
     if sts.get('auto_reclose'):
         setg['ar_expected'] = sts['auto_reclose'] == 'In service'
     if ctr:
@@ -1661,3 +1680,45 @@ def settings_table(sts):
             r[sv.get('device') or n] = '-' if v is None else (f"{v:g}" if isinstance(v, float) else str(v))
         rows.append(r)
     return pd.DataFrame(rows)
+
+
+def _cross(p1, d1, p2, d2):
+    """Intersection of the lines p1 + t d1 and p2 + u d2 (complex numbers)."""
+    den = (d1.real * d2.imag - d1.imag * d2.real)
+    if abs(den) < 1e-12:
+        return p1
+    t = ((p2 - p1).real * d2.imag - (p2 - p1).imag * d2.real) / den
+    return p1 + t * d1
+
+
+def zone_shapes(a):
+    """Distance zones on the R-X plane (primary ohms) as (label, colour, xs, ys, kind). Quadrilateral when the settings
+    say so (reach line with tilt, resistive reach parallel to the line angle, directional line), otherwise mho circles."""
+    line, st = a['line'], a['setting']
+    Z = complex(line['r1'], line['x1']) * line['length_km']
+    ang = np.angle(Z)
+    kind = 'gnd' if str(a.get('type', '')).endswith('G') else 'ph'
+    char = st.get('char_' + kind) or st.get('char_ph') or st.get('char_gnd') or 'mho'
+    Rr = st.get('r_' + kind) or st.get('r_ph') or st.get('r_gnd') or [None, None, None]
+    zones = [(st.get('z1_reach'), 'Zone 1', '#d63a3a'), (st.get('z2_reach'), 'Zone 2', '#d99a00'), (st.get('z3_reach'), 'Zone 3', '#2a78d6')]
+    out = []
+    for i, (reach, lab, col) in enumerate(zones):
+        if not reach:
+            continue
+        if char == 'quad':
+            R = Rr[i] if i < len(Rr) and Rr[i] else 0.5 * abs(Z) * reach
+            P = Z * reach
+            top_d = np.exp(1j * np.radians(st.get('tilt_deg', -3.0)))
+            side_d = np.exp(1j * ang)
+            bot_d = np.exp(1j * np.radians(-30.0))
+            TL = _cross(P, top_d, complex(-R / 4, 0), side_d)
+            TR = _cross(P, top_d, complex(R, 0), side_d)
+            BR = _cross(complex(R, 0), side_d, 0j, bot_d)
+            BL = _cross(complex(-R / 4, 0), side_d, 0j, bot_d)
+            pts = [TL, TR, BR, 0j, BL, TL]
+            out.append((f"{lab} ({reach * 100:.0f}%, R {R:.0f} Ω)", col, [p.real for p in pts], [p.imag for p in pts], 'quad'))
+        else:
+            th = np.linspace(0, 2 * np.pi, 200)
+            c = Z * reach / 2
+            out.append((f"{lab} ({reach * 100:.0f}%)", col, list(c.real + abs(c) * np.cos(th)), list(c.imag + abs(c) * np.sin(th)), 'mho'))
+    return out[::-1]                            # outer zones first, so zone 1 is drawn on top
