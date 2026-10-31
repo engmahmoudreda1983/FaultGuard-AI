@@ -647,10 +647,7 @@ def show_incident(a, rec):
     with c1:
         st.markdown("#### FMEA")
         st.dataframe(fmea_table(a), hide_index=True, width=STRETCH)
-    with st.expander("📘 FMEA reference: how S, O, D and the risks are set"):
-        st.caption(fg.FMEA_BASIS)
-        st.dataframe(fg.fmea_reference(a), hide_index=True, width=STRETCH)
-        st.dataframe(pd.DataFrame(fg.FMEA_SCALES, columns=['Scale', 'Rule']), hide_index=True, width=STRETCH)
+
     c2.plotly_chart(fmea_rpn_plot(a['FMEA']), width=STRETCH, key='fp_rpn')
     st.markdown("#### Sequence of events (record and event list)")
     so = fg.soe(a)
@@ -661,6 +658,12 @@ def show_incident(a, rec):
     d[1].download_button("📥 Sequence of events (CSV)", so.to_csv(index=False).encode('utf-8-sig'), f"FaultGuard_{stem}_SOE.csv", 'text/csv', key='fp_soe')
     summ = pd.DataFrame([{k: v for k, v in to_record(a, '').items() if k not in ('Mode Risks', 'FMEA', 'Findings', 'Source', 'Analyzed')}])
     d[2].download_button("📥 Incident summary (CSV)", summ.to_csv(index=False).encode('utf-8-sig'), f"FaultGuard_{stem}_summary.csv", 'text/csv', key='fp_sum')
+    st.markdown("#### 📘 FMEA reference: how S, O, D and the risks are set")
+    st.caption(fg.FMEA_BASIS)
+    st.dataframe(fg.fmea_reference(a), hide_index=True, width=STRETCH,
+                 column_config={'Risk (%) criteria': st.column_config.TextColumn(width='large'), 'Definition': st.column_config.TextColumn(width='medium')})
+    st.dataframe(pd.DataFrame(fg.FMEA_SCALES, columns=['Scale', 'Rule']), hide_index=True, width=STRETCH,
+                 column_config={'Rule': st.column_config.TextColumn(width='large')})
 
 
 # ==========================================
