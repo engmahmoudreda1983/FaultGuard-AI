@@ -1765,6 +1765,8 @@ PH_C = {'A': '#d62728', 'B': '#e3a400', 'C': '#1f5fbf', 'N': '#222222'}
 def stations(a):
     """Names of the two line ends: from 'A - B' / 'A to B' in the line name, else the station and 'Remote end'."""
     m = a.get('meta', {}) or {}
+    if m.get('End A') and m.get('End B'):
+        return m['End A'], m['End B']
     ln = str(m.get('Line') or '')
     tidy = lambda x: _re.sub(r'\s{2,}', ' ', _re.sub(r'\b(\d+\s*kv|s/?s|substation|sub|bay|\d+[a-z]?|l\d+|line)\b', '', str(x), flags=_re.I)).strip(' -').title()
     sA = tidy(m.get('Station') or a.get('station') or '') or 'Station A'
@@ -1967,3 +1969,44 @@ def rx_fig(a, width=7.2, height=6.4):
     ax.set_title(f"Impedance seen by the relay ({'quadrilateral' if kind == 'quad' else 'mho'} zones {src_})", fontsize=10, fontweight='bold', color='#0b2e59', loc='left')
     ax.set_xlabel('R (Ω primary)', fontsize=9); ax.set_ylabel('X (Ω primary)', fontsize=9); ax.grid(alpha=.3, lw=0.6); ax.tick_params(labelsize=8)
     return fig
+
+
+# ---------------------------------------------------------------- the protected equipment (one trip report per fault)
+EQUIP_TYPES = ['Line', 'Cable', 'Transformer', 'Reactor', 'Busbar']
+
+
+def equipment_code(text):
+    """Equipment number from a relay description such as '21A SILAA L12' -> 'L12' (also T1, R2, TR3, BB1)."""
+    m = _re.search(r'\b((?:L|T|TR|R|SR|BB|C)\s*-?\d{1,3}[A-Z]?)\b', str(text or ''), _re.I)
+    return m.group(1).upper().replace(' ', '') if m else ''
+
+
+def name_equipment(a, typ=None, name=None, end_a=None, end_b=None):
+    """Fill the incident's equipment identity: type, number, the two ends (stations) and the report title.
+    Ends come from the user, else from the records of both ends, else from the record station and the relay description."""
+    m = a.setdefault('meta', {})
+    typ = typ or m.get('Equipment Type') or 'Line'
+    used = a.get('settings_used')
+    desc = (used[1].get('description') if used else '') or ''
+    name = name or m.get('Equipment') or equipment_code(desc) or equipment_code(m.get('Line'))
+    tidy = lambda x: _re.sub(r'\s{2,}', ' ', _re.sub(r'\b(\d+\s*kv|s/?s|substation|sub|bay|\d+[a-z]?|l\d+|line)\b', '', str(x), flags=_re.I)).strip(' -').title()
+    rec_st = []
+    for r in a.get('records') or []:
+        t_ = tidy(r.get('Station') or '')
+        if t_ and t_ not in rec_st:
+            rec_st.append(t_)
+    if not (end_a and end_b):
+        if len(rec_st) >= 2:
+            a0, b0 = rec_st[0], rec_st[1]
+        else:
+            a0, b0 = stations(a)
+        end_a, end_b = end_a or a0, end_b or (b0 if b0 != 'Remote end' or typ in ('Line', 'Cable') else '')
+    kv = a.get('line', {}).get('kv')
+    kvs = f"{kv:g} kV " if kv else ''
+    if typ in ('Line', 'Cable'):
+        title = f"{end_a} - {end_b} {kvs}{typ} {name}".strip()
+    else:
+        title = f"{end_a} {kvs}{typ} {name}".strip()
+    m.update({'Equipment Type': typ, 'Equipment': name, 'End A': end_a, 'End B': end_b if typ in ('Line', 'Cable') else '',
+              'Line': _re.sub(r'\s{2,}', ' ', title), 'Station': end_a if typ not in ('Line', 'Cable') else f"{end_a} / {end_b}"})
+    return m['Line']

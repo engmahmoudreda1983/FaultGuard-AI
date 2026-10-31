@@ -109,14 +109,17 @@ wave_fig, rx_fig, line_fig = fg.wave_fig, fg.rx_fig, fg.line_fig
 
 def incident_pdf(a, rec):
     meta = a.get('meta', {})
-    buf, doc, deco = _doc('Incident and Trip Analysis Report')
-    S = [P('Incident and Trip Analysis Report', H1),
-         P(f"{meta.get('Incident', '')}  -  {meta.get('Station', '')}  -  {meta.get('Line', '')}  -  {meta.get('Date', '')}", SMALL), Spacer(1, 4)]
+    eq = meta.get('Line') or 'Protected equipment'
+    is_line = meta.get('Equipment Type', 'Line') in ('Line', 'Cable')
+    buf, doc, deco = _doc(f"Trip Report - {eq}")
+    S = [P('Trip Report', H1), Paragraph(f"<font size='13' color='#0b2e59'><b>{clean(eq)}</b></font>", BODY), Spacer(1, 3),
+         P(f"Incident {meta.get('Incident', '')}  -  {meta.get('Date', '')}  -  relays: {meta.get('Relay', '')}", SMALL), Spacer(1, 4)]
     title = 'TEST RECORD' if a.get('likely_test') else f"{SLAB[a['Status']]}  -  incident risk {a['Overall Risk (%)']:.0f}%"
     S.append(banner(title, fg.summary_text(a), 'EXCELLENT' if a.get('likely_test') else a['Status']))
-    if a.get('fault'):
+    if a.get('fault') and is_line:
         S.append(P('Fault location on the line', H2))
         S.append(fig_image(line_fig(a)))
+    if a.get('fault'):
         S.append(P('Fault analysis: FaultGuard AI against the relays', H2))
         C = fg.compare_table(a)
         cols = list(C.columns)
@@ -130,7 +133,7 @@ def incident_pdf(a, rec):
         S.append(PageBreak())
         S.append(P('Disturbance record: currents, voltages and relay contacts', H2))
         S.append(fig_image(wave_fig(rec, a)))
-        if a.get('traj') is not None:
+        if a.get('traj') is not None and is_line:
             S.append(PageBreak())
             S.append(P('Impedance seen by the relay (R-X)', H2))
             S.append(fig_image(rx_fig(a), W * 0.92))
@@ -143,8 +146,9 @@ def incident_pdf(a, rec):
             S.append(P(n))
     S.append(P('Incident', H2))
     S.append(table([['Item', 'Value', 'Item', 'Value'],
-                    ['Station', meta.get('Station', '-') or '-', 'Line / bay', meta.get('Line', '-') or '-'],
-                    ['Relay', meta.get('Relay', '-') or '-', 'Record start', str(a.get('record_start') or '-')[:23]],
+                    ['Protected equipment', eq, 'Type / number', f"{meta.get('Equipment Type', '-')} {meta.get('Equipment', '')}"],
+                    ['Station A (local)', meta.get('End A', '-') or '-', 'Station B (remote)', meta.get('End B', '-') or '-'],
+                    ['Relays', meta.get('Relay', '-') or '-', 'Record start', str(a.get('record_start') or '-')[:23]],
                     ['Line length', f"{a['line']['length_km']:.1f} km", 'Line impedance (per km)', f"Z1 {a['line']['r1']:.3f}+j{a['line']['x1']:.3f}, Z0 {a['line']['r0']:.3f}+j{a['line']['x0']:.3f} ohm"]],
                    [W * 0.16, W * 0.34, W * 0.18, W * 0.32]))
     if a.get('fault'):

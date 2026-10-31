@@ -356,8 +356,8 @@ def init_fp():
         st.session_state.setdefault('ln_' + k, float(fg.DEFAULT_LINE[k]))
     for k, v in SET_DEF.items():
         st.session_state.setdefault('st_' + k, v)
-    for k in ('inc_id', 'inc_station', 'inc_line', 'inc_relay'):
-        st.session_state.setdefault(k, '')
+    for k in ('inc_id', 'inc_type', 'inc_name', 'inc_a', 'inc_b', 'inc_relay'):
+        st.session_state.setdefault(k, 'Line' if k == 'inc_type' else '')
     if st.session_state.get('fp_init') is None:
         st.session_state['fp_init'] = True
         fill_demo()
@@ -373,14 +373,16 @@ def fill_demo():
     meta, cfg, dat, E, line = demo_files(i)
     for k, _, _ in LINE_KEYS:
         st.session_state['ln_' + k] = float(line[k])
-    st.session_state['inc_id'] = meta['Incident']; st.session_state['inc_station'] = meta['Station']
-    st.session_state['inc_line'] = meta['Line']; st.session_state['inc_relay'] = meta['Relay']
+    d = fg.DEMO_INCIDENTS[i]
+    st.session_state['inc_id'] = meta['Incident']; st.session_state['inc_type'] = 'Line'
+    st.session_state['inc_name'] = 'L' + d[1].split()[-1]; st.session_state['inc_a'] = meta['Station']
+    st.session_state['inc_b'] = d[2]; st.session_state['inc_relay'] = meta['Relay']
 
 
 def src_changed():
     if st.session_state.get('fp_src') == "Upload relay files":
-        for k in ('inc_id', 'inc_station', 'inc_line', 'inc_relay'):
-            st.session_state[k] = ''
+        for k in ('inc_id', 'inc_type', 'inc_name', 'inc_a', 'inc_b', 'inc_relay'):
+            st.session_state[k] = 'Line' if k == 'inc_type' else ''
     else:
         fill_demo()
 
@@ -466,10 +468,16 @@ def analysis_page():
         up_set = c3.file_uploader("3. Relay settings (PDF, picture, CSV, TXT, Excel), any number", type=DOC, accept_multiple_files=True, key='up_set')
         c1.number_input("Frequency for CSV records (Hz)", 45.0, 65.0, 50.0, 10.0, key='csv_freq')
         c3.checkbox("Use the settings files for the line data and protection settings", True, key='use_set')
-    st.markdown("##### Incident")
-    c = st.columns(4)
-    c[0].text_input("Incident ID", key='inc_id'); c[1].text_input("Substation", key='inc_station')
-    c[2].text_input("Line / bay", key='inc_line'); c[3].text_input("Relay", key='inc_relay')
+    st.markdown("##### Protected equipment (one trip report per fault)")
+    st.caption("Leave a box empty to fill it from the files: the stations from the disturbance records, the equipment number and the remote end "
+               "from the relay description in the settings (e.g. '21A SILAA L12').")
+    c = st.columns([1, 1, 0.8, 1.2, 1.2, 1])
+    c[0].text_input("Incident ID", key='inc_id')
+    c[1].selectbox("Equipment type", fg.EQUIP_TYPES, key='inc_type')
+    c[2].text_input("Number (e.g. L12)", key='inc_name')
+    c[3].text_input("Station A (local end)", key='inc_a')
+    c[4].text_input("Station B (remote end)", key='inc_b')
+    c[5].text_input("Relays", key='inc_relay')
     st.markdown("##### Line data")
     mode = st.radio("Enter the line data as", ["Per-km sequence impedances", "Relay settings (line impedance, angle, kZN)"], horizontal=True, key='ln_mode')
     if mode.startswith('Per-km'):
@@ -534,18 +542,20 @@ def analysis_page():
             setting = {k: float(ss['st_' + k]) for k in SET_DEF}
             setting['z1_reach'] /= 100; setting['z2_reach'] /= 100; setting['ar_expected'] = bool(ss['st_ar'])
             setting['char_ph'] = setting['char_gnd'] = 'quad' if ss.get('st_char', 'Quadrilateral') == 'Quadrilateral' else 'mho'
-            meta = {'Incident': ss['inc_id'] or rec_name, 'Station': ss['inc_station'] or (rec.get('station') or '').title(),
-                    'Line': ss['inc_line'] or (rec.get('device') or '').title(), 'Relay': ss['inc_relay'] or (rec.get('device') or '').title(),
+            meta = {'Incident': ss['inc_id'] or rec_name, 'Relay': ss['inc_relay'] or (rec.get('device') or '').title(),
                     'Date': str(rec.get('start'))[:19] if rec.get('start') else ''}
             if src == "Demo incident":
                 a = fg.analyze(rec, events, line, setting, model=MODEL(), scale=ss['scale'], ct=ss['ct'], vt=ss['vt'], meta=meta)
             else:
                 a, rec = fg.analyze_incident(recs, events, settings, line, setting, model=MODEL(), scale=ss['scale'], ct=ss['ct'], vt=ss['vt'],
                                              meta=meta, use_settings=ss.get('use_set', True))
-                if not ss['inc_station']:
-                    a['meta']['Station'] = (rec.get('station') or '').title()
                 if not ss['inc_relay'] and a.get('relay_reports'):
                     a['meta']['Relay'] = ' / '.join(a['relay_reports'])
+            if a.get('record_name') is None:
+                a['records'] = [fg.record_summary(rec_name, dict(a, station=rec.get('station')))]
+            fg.name_equipment(a, ss['inc_type'], ss['inc_name'] or None, ss['inc_a'] or None, ss['inc_b'] or None)
+            if not ss['inc_id']:
+                a['meta']['Incident'] = f"{a['meta'].get('Equipment') or 'Trip'} {str(a['meta'].get('Date') or '')[:10]}".strip()
         except Exception as e:
             st.error(f"Could not analyze the files: {e}")
             return
@@ -562,7 +572,8 @@ def show_incident(a, rec):
     col = STATUS_COLOR[sk]
     st.divider()
     m = a.get('meta', {})
-    st.markdown(f"### {m.get('Incident', '')} · {m.get('Line', '')} · {m.get('Date', '')}")
+    st.markdown(f"### 🔌 Trip Report: {m.get('Line', '')}")
+    st.caption(f"Incident {m.get('Incident', '')} · {m.get('Date', '')} · stations: {m.get('Station', '')} · relays: {m.get('Relay', '')}")
     if a.get('likely_test'):
         banner(STATUS_LABEL['TEST'], fg.summary_text(a), col)
     else:
@@ -595,8 +606,10 @@ def show_incident(a, rec):
     k[4].metric("Breaker", f0(a.get('breaker_ms')), f"clearing {f0(a.get('clearing_ms'))}", delta_arrow='off', delta_color='off')
     ar0 = a['ar'].split(';')[0].split(' (')[0]
     k[5].metric("Auto-reclose", ar0.split(',')[0], (a['ar'].split('; ')[1] if '; ' in a['ar'] else None), delta_arrow='off', delta_color='off')
-    st.markdown("#### Fault location on the line")
-    mpl(fg.line_fig(a))
+    is_line = a['meta'].get('Equipment Type', 'Line') in ('Line', 'Cable')
+    if is_line:
+        st.markdown("#### Fault location on the line")
+        mpl(fg.line_fig(a))
     c1, c2, c3 = st.columns([0.9, 1.1, 1])
     c1.plotly_chart(gauge(a['Overall Risk (%)'], col), width=STRETCH, key='fp_g')
     c2.plotly_chart(mode_plot(a['Mode Risks']), width=STRETCH, key='fp_m')
@@ -605,10 +618,11 @@ def show_incident(a, rec):
     mpl(fg.wave_fig(rec, a))
     with st.expander("🔎 Interactive view of the whole record (zoom and hover)"):
         st.plotly_chart(wave_plot(rec, a), width=STRETCH, key='fp_w')
-    c1, c2 = st.columns([1, 1.05])
-    with c1:
-        st.markdown("#### Impedance seen by the relay (R-X)")
-        mpl(fg.rx_fig(a))
+    c1, c2 = st.columns([1, 1.05]) if is_line else (None, st.container())
+    if is_line:
+        with c1:
+            st.markdown("#### Impedance seen by the relay (R-X)")
+            mpl(fg.rx_fig(a))
     with c2:
         st.markdown("#### FaultGuard AI vs the relays' own fault records")
         st.dataframe(compare_table(a), hide_index=True, width=STRETCH)
