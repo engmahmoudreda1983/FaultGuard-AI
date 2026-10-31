@@ -185,6 +185,15 @@ def incident_pdf(a, rec):
     if len(so):
         rows = [['Clock time' if 'Clock Time' in so else '#', 'ms', 'Source', 'Event']] + [[r.get('Clock Time', i + 1), f"{r['Time (ms)']:.1f}", r['Source'], r['Event']] for i, r in so.head(60).iterrows()]
         S.append(P('Sequence of events', H2)); S.append(table(rows, [W * 0.25, W * 0.1, W * 0.15, W * 0.5]))
+    S.append(PageBreak())
+    S.append(P('Appendix: FMEA reference - how S, O, D and the risks are set', H2))
+    S.append(P(fg.FMEA_BASIS, SMALL)); S.append(Spacer(1, 4))
+    F = fg.fmea_reference(a)
+    hdr = ['Failure mode', 'Definition', 'S', 'Risk (%) criteria', 'D'] + (['This incident'] if 'This incident' in F else [])
+    wd = [0.13, 0.17, 0.04, 0.4, 0.04] + ([0.22] if 'This incident' in F else [])
+    S.append(table([hdr] + F[hdr].astype(str).values.tolist(), [W * x for x in wd]))
+    S.append(Spacer(1, 6))
+    S.append(table([['Scale', 'Rule']] + [list(r) for r in fg.FMEA_SCALES], [W * 0.22, W * 0.78]))
     S.append(Spacer(1, 6))
     S.append(P('Fault type by the FaultGuard AI model (Random Forest on superimposed-current and voltage features) checked by the classic phase selection; '
                'location by the Takagi method with the line impedance; phasors by one-cycle Fourier filtering. RPN = S x O x D.', SMALL))
