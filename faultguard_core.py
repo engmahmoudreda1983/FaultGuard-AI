@@ -529,6 +529,9 @@ SET_KEYS = [
     ('r1_ph', r'r\s*1\s*ph\w*\.?\s*res\w*'), ('r2_ph', r'r\s*2\s*ph\w*\.?\s*res\w*'), ('r3_ph', r'r\s*3\s*ph\w*\.?\s*res\w*'),
     ('r1_gnd', r'r\s*1\s*g(?:n)?d\w*\.?\s*res\w*'), ('r2_gnd', r'r\s*2\s*g(?:n)?d\w*\.?\s*res\w*'), ('r3_gnd', r'r\s*3\s*g(?:n)?d\w*\.?\s*res\w*'),
     ('tilt', r'z\s*1\s*tilt\w*(?:\s*top\s*line)?'),
+    ('z1_time', r't\s*z(?:one)?\s*1\s*(?:ph\w*|gnd|ground)?\.?\s*(?:delay|time)'),
+    ('z3_time', r't\s*z(?:one)?\s*3\s*(?:ph\w*|gnd|ground)?\.?\s*(?:delay|time)'),
+    ('z4_time', r't\s*z(?:one)?\s*4\s*(?:ph\w*|gnd|ground)?\.?\s*(?:delay|time)'),
     ('z2_time', r't\s*z(?:one)?\s*2\s*(?:ph\w*|gnd|ground)?\.?\s*(?:delay|time)?|z(?:one)?\s*2\s*(?:ph\w*|gnd)?\s*(?:time\s*)?delay'),
     ('ct_primary', r'(?:phase\s*)?ct\s*prim\w*'),
     ('ct_secondary', r'(?:phase\s*)?ct\s*sec\w*'),
@@ -588,7 +591,7 @@ def parse_settings(text):
                 continue
             if key == 'line_length':
                 v = v * 1.609 if u == 'mi' else (v / 1000 if u == 'm' and v > 2000 else v)
-            if key == 'z2_time':
+            if key in ('z1_time', 'z2_time', 'z3_time', 'z4_time'):
                 v = v * 1000 if (u == 's' or (not u and v < 5)) else v
             if key in ('z1_reach', 'z2_reach'):
                 out[key + '_unit'] = '%' if u == '%' else 'ohm'
@@ -630,8 +633,9 @@ def settings_line(sts, ct=None, vt=None):
                 setg[z + '_reach'] = r / 100
             elif Zl:
                 setg[z + '_reach'] = r / sts['line_z']          # same base (primary or secondary) as the line impedance
-    if sts.get('z2_time'):
-        setg['z2_time_ms'] = float(sts['z2_time'])
+    for n in (1, 2, 3, 4):
+        if sts.get(f'z{n}_time') is not None:
+            setg[f'z{n}_time_ms'] = float(sts[f'z{n}_time'])
     k = (vtr / ctr) if (sts.get('values_in') == 'Secondary' and ctr and vtr) else 1.0
     if sts.get('z3_reach') and sts.get('line_z'):
         setg['z3_reach'] = sts['z3_reach'] / 100 if sts.get('z3_reach_unit') == '%' else sts['z3_reach'] / sts['line_z']
@@ -775,7 +779,7 @@ def analyze(rec, events=None, line=None, setting=None, model=None, scale='Auto',
     """Full analysis of one incident. setting: expected times and ratings."""
     line = dict(DEFAULT_LINE, **(line or {}))
     st = {'expected_inst_ms': 40.0, 'cb_rated_ms': 50.0, 'critical_ms': 120.0, 'cb_rating_ka': 50.0, 'z1_reach': 0.8, 'z2_reach': 1.2,
-          'z2_time_ms': 400.0, 'ar_expected': False}
+          'z2_time_ms': 400.0, 'ar_expected': False, 'z1_time_ms': 0.0, 'z3_time_ms': 800.0, 'z4_time_ms': 800.0, 'tol_pct': 5.0}
     st.update(setting or {})
     meta = dict(meta or {})
     A = scale_primary(rec, scale, ct, vt)
@@ -1063,13 +1067,28 @@ def assess(out, st):
             s = max(s, lin(op, st['expected_inst_ms'], st['expected_inst_ms'] * 2.5, 0, 70))
             if op > st['expected_inst_ms']:
                 w.append(f"Slower than the {st['expected_inst_ms']:.0f} ms expected for an instantaneous element.")
-        elif any('zone 2' in e.lower() for e in elems):
-            s = max(s, lin(op, st['z2_time_ms'] * 1.1, st['z2_time_ms'] * 1.6, 0, 60))
-            w.append(f"Cleared by zone 2 (time-delayed, about {st['z2_time_ms']:.0f} ms).")
-            if loc is not None and loc < st['z1_reach'] - 0.05:
-                s = max(s, 60.0); w.append(f"The fault is at {loc * 100:.0f}% of the line, inside the zone 1 reach ({st['z1_reach'] * 100:.0f}%): zone 1 should have tripped (possible under-reach).")
-            else:
-                s = max(s, 38.0); w.append('Fault beyond the zone 1 reach: zone 2 is correct, but the clearing is slow; an aided (carrier) scheme would clear it instantaneously.')
+        else:
+            zt = sorted({int(m_.group(1)) for e in elems for m_ in [re.search(r'zone (\d)', e.lower())] if m_})
+            if zt:
+                n = zt[0]
+                tset = float(st.get(f'z{n}_time_ms', {1: 0.0, 2: 400.0, 3: 800.0, 4: 800.0}.get(n, 0.0)))
+                tol = st.get('tol_pct', 5.0) / 100
+                lo, hi = tset * (1 - tol), tset * (1 + tol) + st['expected_inst_ms']
+                w.append(f"Cleared by zone {n}: operated in {f0(op)} ms against its {tset:.0f} ms time-delay setting "
+                         f"(allowed {lo:.0f}-{hi:.0f} ms = setting +/-{tol * 100:.0f}% + {st['expected_inst_ms']:.0f} ms relay operating time).")
+                if op > hi:
+                    s = max(s, lin(op, hi, hi + max(100.0, 0.25 * tset), 20, 60))
+                    w.append(f"Slower than the setting allows by {op - hi:.0f} ms: check the zone {n} timer and the relay.")
+                elif tset > 0 and op < lo - 10:
+                    s = max(s, 50.0)
+                    w.append(f"Faster than the zone {n} time delay ({tset:.0f} ms): another element tripped first or the timer setting is wrong.")
+                if n == 2:
+                    if loc is not None and loc < st['z1_reach'] - 0.05:
+                        s = max(s, 60.0); w.append(f"The fault is at {loc * 100:.0f}% of the line, inside the zone 1 reach ({st['z1_reach'] * 100:.0f}%): zone 1 should have tripped (possible under-reach).")
+                    else:
+                        s = max(s, 38.0); w.append('Fault beyond the zone 1 reach: zone 2 is correct, but the clearing is slow; an aided (carrier) scheme would clear it instantaneously.')
+                elif n >= 3:
+                    s = max(s, 45.0); w.append(f"Cleared by zone {n} (remote backup): the main protection of this line or of the next line did not clear the fault; check why.")
         if loc is not None:
             if loc > 1.05 and any('zone 1' in e.lower() for e in elems):
                 s = max(s, 90.0); w.append(f"The fault is located beyond the remote end ({loc * 100:.0f}% of the line) but zone 1 tripped: OVER-REACH / mal-operation. The fault was external to this line.")
@@ -2194,8 +2213,9 @@ def fmea_reference(a=None):
     st = (a or {}).get('setting', {}) or {}
     e = st.get('expected_inst_ms', 40); cb = st.get('cb_rated_ms', 50); cr = st.get('critical_ms', 120); tz2 = st.get('z2_time_ms', 400)
     crit = {
-        'Protection operation': f"Instantaneous trip slower than {e:.0f} ms: 0% at {e:.0f} ms rising to 70% at {e * 2.5:.0f} ms. Zone 2 trip: 0% at "
-                                f"{tz2 * 1.1:.0f} ms to 60% at {tz2 * 1.6:.0f} ms. Zone 2 trip for a fault inside the zone 1 reach: 60%. Impedance in zone 1 "
+        'Protection operation': f"Instantaneous trip (zone 1, aided, differential): 0% up to {e:.0f} ms rising to 70% at {e * 2.5:.0f} ms. Time-delayed zone n: "
+                                f"allowed = its own tZn setting +/-{st.get('tol_pct', 5):.0f}% + {e:.0f} ms relay operating time (e.g. zone 2 {tz2 * 0.95:.0f}-{tz2 * 1.05 + e:.0f} ms); "
+                                f"slower: 20% rising to 60%; faster than the setting: 50%; zone 3/4 (remote backup): 45%. Zone 2 trip for a fault inside the zone 1 reach: 60%. Impedance in zone 1 "
                                 f"but no instantaneous trip (failed to operate): 70%. Zone 1 trip with the impedance outside zone 1 or the fault beyond "
                                 f"the remote end (over-reach): 80-90%. No trip found: 40%.",
         'Breaker performance': f"Breaker time (trip to current interrupted) against the rated {cb:.0f} ms: 0% at 1.2x ({cb * 1.2:.0f} ms) rising to "

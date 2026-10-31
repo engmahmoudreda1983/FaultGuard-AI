@@ -348,7 +348,8 @@ def compare_table(a):
 # ==========================================
 LINE_KEYS = [('length_km', 'Line length (km)', 0.1), ('r1', 'R1 (Ω/km)', 0.001), ('x1', 'X1 (Ω/km)', 0.001),
              ('r0', 'R0 (Ω/km)', 0.001), ('x0', 'X0 (Ω/km)', 0.001), ('kv', 'Voltage (kV)', 1.0)]
-SET_DEF = {'expected_inst_ms': 40.0, 'cb_rated_ms': 50.0, 'critical_ms': 120.0, 'cb_rating_ka': 50.0, 'z1_reach': 80.0, 'z2_reach': 120.0, 'z2_time_ms': 400.0}
+SET_DEF = {'expected_inst_ms': 40.0, 'cb_rated_ms': 50.0, 'critical_ms': 120.0, 'cb_rating_ka': 50.0, 'z1_reach': 80.0, 'z2_reach': 120.0, 'z2_time_ms': 400.0,
+           'z3_time_ms': 800.0, 'tol_pct': 5.0}
 
 
 def init_fp():
@@ -504,7 +505,12 @@ def analysis_page():
         c[0].number_input("Zone 1 reach (% of line)", 10.0, 120.0, step=5.0, key='st_z1_reach')
         c[1].number_input("Zone 2 reach (% of line)", 50.0, 250.0, step=5.0, key='st_z2_reach')
         c[2].number_input("Zone 2 time (ms)", 100.0, 1500.0, step=50.0, key='st_z2_time_ms')
-        c[3].number_input("Expected instantaneous operate (ms)", 10.0, 100.0, step=5.0, key='st_expected_inst_ms')
+        c[3].number_input("Relay operating time (instantaneous, ms)", 10.0, 100.0, step=5.0, key='st_expected_inst_ms')
+        c = st.columns(4)
+        c[0].number_input("Zone 3 time (ms)", 100.0, 3000.0, step=50.0, key='st_z3_time_ms')
+        c[1].number_input("Timing tolerance on the settings (%)", 0.0, 20.0, step=1.0, key='st_tol_pct',
+                          help="A time-delayed zone is correct when it trips within its setting +/- this % plus the relay operating time.")
+        c[2].caption("Zone times from a settings file replace these values.")
         c = st.columns(4)
         c[0].number_input("Breaker rated break time (ms)", 20.0, 150.0, step=5.0, key='st_cb_rated_ms')
         c[1].number_input("Critical clearing time (ms)", 60.0, 500.0, step=10.0, key='st_critical_ms')
