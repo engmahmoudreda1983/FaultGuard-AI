@@ -754,7 +754,7 @@ def compare_table(a):
             ('Breaker time', f0(a.get('breaker_ms')), 'Relay CB Time'),
             ('Fault duration', f0(a.get('clearing_ms')), 'Relay Fault Duration'),
             ('Faulted-phase current', f"{a['I_fault_max_kA']:.2f} kA", None),
-            ('Tripping elements', ', '.join(e[1] for e in a['elements']) or '-', 'Relay Trip Elements'),
+            ('Tripping elements', (lambda c, o: (', '.join(e[1] for e in c) or '-') + (f" (also operated, did not clear: {', '.join(e[1] for e in o)})" if o else ''))(*cleared_elements(a)), 'Relay Trip Elements'),
             ('Auto-reclose', a.get('ar', '-'), None)]
     reps = a.get('relay_reports') or {}
     out = []
@@ -1264,6 +1264,21 @@ def findings(a):
 
 
 def summary_text(a):
+    """The incident summary: the engineer's edited text when given, else the automatic one."""
+    ed = a.get('summary_edit')
+    return ed.strip() if isinstance(ed, str) and ed.strip() else summary_auto(a)
+
+
+def cleared_elements(a):
+    """(elements that cleared the fault, elements that operated without clearing it) after the engineer's review."""
+    allx = a.get('elements', [])
+    sel = a.get('elements_cleared')
+    if sel is None:
+        return allx, []
+    return [e for e in allx if e[1] in sel], [e for e in allx if e[1] not in sel]
+
+
+def summary_auto(a):
     if not a.get('fault'):
         return 'No fault found in the record.'
     if a.get('likely_test'):
@@ -1271,12 +1286,14 @@ def summary_text(a):
                 (f" Protection operated {a['operate_ms']:.0f} ms after the injection started." if a.get('operate_ms') is not None else ''))
     loc = f"{a['loc_km']:.1f} km ({a['loc_pu'] * 100:.0f}% of the line)" if a.get('loc_km') is not None else 'not located'
     inc = a.get('t_inception_ms') or 0
-    els = ', '.join(e[1] + (f" ({e[0] - inc:.0f} ms)" if e[0] is not None else '') for e in a['elements']) or 'element not identified'
+    cl, oth = cleared_elements(a)
+    els = ', '.join(e[1] + (f" ({e[0] - inc:.0f} ms)" if e[0] is not None else '') for e in cl) or 'element not identified'
     s = (f"{TYPE_TEXT.get(a['type'], a['type'])} fault, {a['I_fault_max_kA']:.1f} kA, located at {loc}. "
          f"Cleared by {els}" + (f" in {a['clearing_ms']:.0f} ms" if a.get('clearing_ms') else '') +
          (f" (first trip {a['operate_ms']:.0f} ms" + (f" by {a['trip_by']}" if a.get('trip_by') not in (None, 'record') else '') +
           f" + breaker {a['breaker_ms']:.0f} ms)" if a.get('operate_ms') is not None and a.get('breaker_ms') is not None else '') +
-         f". Auto-reclose: {a['ar'].lower()}.")
+         f". Auto-reclose: {a['ar'].lower()}." +
+         (f" Also operated without clearing the fault: {', '.join(e[1] for e in oth)}." if oth else ''))
     return s
 
 
@@ -2102,7 +2119,7 @@ def binary_rows(rec, a, t0, t1, max_rows=22, own_only=False):
 
 def risk_title(a, lab):
     """Banner title that says where the incident risk comes from (the FMEA failure modes)."""
-    return f"{lab} - incident risk {a['Overall Risk (%)']:.0f}% (FMEA failure modes, governing: {a['Governing Mode']})"
+    return f"{lab} - incident risk {a['Overall Risk (%)']:.0f}% (from the FMEA failure modes; highest: {a['Governing Mode']})"
 
 
 def risk_note(a):
