@@ -211,10 +211,10 @@ def combined_pdf(R, summary, source, n_a, n_w):
     S = [P('Incident Summary Report', H1), P(f"{len(R)} incidents  -  source: {source}", SMALL), Spacer(1, 4)]
     st = 'ACTION' if n_a else 'WATCH' if n_w else 'EXCELLENT'
     S.append(banner(f"{n_a} action  -  {n_w} watch  -  {len(R) - n_a - n_w} normal", summary, st))
-    rows = [['Incident', 'Date', 'Line', 'Type', 'Location', 'Clearing', 'Reclose', 'Highest-risk mode', 'Risk', 'Status']]
+    rows = [['Incident', 'Date', 'Line', 'Type', 'Location', 'Clearing', 'Reclose', 'Main reason', 'Risk', 'Status']]
     for _, r in R.iterrows():
         rows.append([r['Incident'], str(r['Date'])[:16], r['Line'], r['Fault Type'], r['Location'], r['Clearing (ms)'], str(r['Auto-Reclose'])[:22],
-                     r['Highest-Risk Mode'], f"{r['Overall Risk (%)']:.0f}", r['Status']])
+                     f"{r['Highest-Risk Mode']}: {r.get('Main Reason', '')}", f"{r['Overall Risk (%)']:.0f}", r['Status']])
     t = table(rows, [W * x for x in [0.08, 0.12, 0.14, 0.06, 0.1, 0.07, 0.13, 0.15, 0.06, 0.09]])
     for i, (_, r) in enumerate(R.iterrows(), 1):
         t.setStyle(TableStyle([('TEXTCOLOR', (9, i), (9, i), SCOL[r['Status']])]))
@@ -223,7 +223,7 @@ def combined_pdf(R, summary, source, n_a, n_w):
     if len(above):
         S.append(P('Incidents needing attention', H2))
         for _, r in above.iterrows():
-            block = [Paragraph(f"<b>{clean(r['Incident'])}</b>  -  {clean(r['Line'])}  -  {clean(r['Highest-Risk Mode'])}  -  {r['Overall Risk (%)']:.0f}% {r['Status']}", BODY),
+            block = [Paragraph(f"<b>{clean(r['Incident'])}</b>  -  {clean(r['Line'])}  -  {r['Overall Risk (%)']:.0f}% {r['Status']}  -  main reason: {clean(r['Highest-Risk Mode'])} ({clean(r.get('Main Reason', ''))})", BODY),
                      P(r['Summary'])] + [P(f"- {f}") for f in r['Findings']]
             block += [P(f"Action: {r['Action']}", SMALL), Spacer(1, 5)]
             S.append(KeepTogether(block))
