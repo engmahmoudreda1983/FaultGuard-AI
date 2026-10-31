@@ -641,6 +641,10 @@ def show_incident(a, rec):
     with c1:
         st.markdown("#### FMEA")
         st.dataframe(fmea_table(a), hide_index=True, width=STRETCH)
+    with st.expander("📘 FMEA reference: how S, O, D and the risks are set"):
+        st.caption(fg.FMEA_BASIS)
+        st.dataframe(fg.fmea_reference(a), hide_index=True, width=STRETCH)
+        st.dataframe(pd.DataFrame(fg.FMEA_SCALES, columns=['Scale', 'Rule']), hide_index=True, width=STRETCH)
     c2.plotly_chart(fmea_rpn_plot(a['FMEA']), width=STRETCH, key='fp_rpn')
     st.markdown("#### Sequence of events (record and event list)")
     so = fg.soe(a)

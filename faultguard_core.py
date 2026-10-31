@@ -2180,3 +2180,52 @@ def timeline_fig(a, rec=None, width=10, height=4.4):
     ax.set_title('Sequence of events (time from fault inception)', loc='left', fontsize=9.5, fontweight='bold', color='#0b2e59')
     fig.tight_layout()
     return fig
+
+
+# ---------------------------------------------------------------- FMEA reference (how S, O, D and the risks are set)
+FMEA_BASIS = ("Method after IEC 60812 (FMEA): RPN = Severity (S) x Occurrence (O) x Detection (D). S is fixed per failure mode by its consequence "
+              "for the power system; O follows from the risk (%) that FaultGuard measures for this incident; D is the same for every mode because "
+              "each condition is found automatically from the disturbance record and the event lists. The criteria below are FaultGuard's engineering "
+              "rules; the time limits come from the settings entered on the analysis page.")
+
+
+def fmea_reference(a=None):
+    """Definition, S, risk criteria, O, D of every failure mode, with this incident's values when given."""
+    st = (a or {}).get('setting', {}) or {}
+    e = st.get('expected_inst_ms', 40); cb = st.get('cb_rated_ms', 50); cr = st.get('critical_ms', 120); tz2 = st.get('z2_time_ms', 400)
+    crit = {
+        'Protection operation': f"Instantaneous trip slower than {e:.0f} ms: 0% at {e:.0f} ms rising to 70% at {e * 2.5:.0f} ms. Zone 2 trip: 0% at "
+                                f"{tz2 * 1.1:.0f} ms to 60% at {tz2 * 1.6:.0f} ms. Zone 2 trip for a fault inside the zone 1 reach: 60%. Impedance in zone 1 "
+                                f"but no instantaneous trip (failed to operate): 70%. Zone 1 trip with the impedance outside zone 1 or the fault beyond "
+                                f"the remote end (over-reach): 80-90%. No trip found: 40%.",
+        'Breaker performance': f"Breaker time (trip to current interrupted) against the rated {cb:.0f} ms: 0% at 1.2x ({cb * 1.2:.0f} ms) rising to "
+                               f"90% at 2x ({cb * 2:.0f} ms). Current not interrupted in the record: 80%. Fault current above 60% of the breaker "
+                               f"rating: 20% rising to 80% at 100%.",
+        'Fault severity': f"Total clearing time against the critical {cr:.0f} ms: 0% at 0.8x rising to 90% at 1.5x (main protection); backup "
+                          f"(time-delayed) clearing above {cr:.0f} ms: 45%. Voltage dip: 0% at 50% dip rising to 45% at 95% dip. Three-phase fault: at least 40%.",
+        'Permanent fault': "Auto-reclose onto a fault that is still present (unsuccessful): 75%. Single-phase fault with auto-reclose in service "
+                           "but no reclose: 40%. Auto-reclose out of service (external recloser off): not assessed, 0%.",
+        'Record quality': "Relay clock not synchronised or relays more than 20 ms apart: 30%. Missing current or voltage channels: 30%. Measured "
+                          "neutral differs from the sum of the phases (CT circuit): 30-60%. AI fault-type confidence below 60%: 25%.",
+    }
+    rows = []
+    for k in MODE_ORDER:
+        r = {'Failure mode': k, 'Definition': MODES[k]['text'], 'S': MODES[k]['S'], 'Risk (%) criteria': crit[k],
+             'O': 'risk / 10, rounded up (1-10)', 'D': DETECTION}
+        if a and 'Mode Risks' in a:
+            rv = a['Mode Risks'][k]; o = max(1, math.ceil(rv / 10))
+            r['This incident'] = f"risk {rv:.0f}% -> O {o} -> RPN {MODES[k]['S']} x {o} x {DETECTION} = {MODES[k]['S'] * o * DETECTION}"
+        rows.append(r)
+    return pd.DataFrame(rows)
+
+
+FMEA_SCALES = [
+    ('Severity S (fixed per mode)', '9 protection or breaker failure can damage plant and spread the outage; 7 heavy fault stress on the system; '
+                                    '6 line out until repaired; 3 record or data issue only'),
+    ('Occurrence O', 'risk 1-10% -> 1, 11-20% -> 2 ... 91-100% -> 10'),
+    ('Detection D', '2 for every mode: found automatically from the record and the event lists (1 = certain, 10 = cannot be detected)'),
+    ('RPN level', 'Low below 40, Medium 40-99, High 100 and above (maximum 9 x 10 x 2 = 180)'),
+    ('Incident risk', 'highest failure-mode risk + 5 points for each other mode above 35%; Normal up to 35%, Watch 35-70%, Action above 70%'),
+    ('Fault type', 'Single-phase to ground: auto-reclose checked only if in service. Phase-phase and double-phase to ground: no reclose expected. '
+                   'Three-phase: fault severity at least 40%. All types: same protection, breaker and record checks'),
+]
