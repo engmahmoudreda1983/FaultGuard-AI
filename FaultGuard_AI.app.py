@@ -658,12 +658,6 @@ def show_incident(a, rec):
     d[1].download_button("📥 Sequence of events (CSV)", so.to_csv(index=False).encode('utf-8-sig'), f"FaultGuard_{stem}_SOE.csv", 'text/csv', key='fp_soe')
     summ = pd.DataFrame([{k: v for k, v in to_record(a, '').items() if k not in ('Mode Risks', 'FMEA', 'Findings', 'Source', 'Analyzed')}])
     d[2].download_button("📥 Incident summary (CSV)", summ.to_csv(index=False).encode('utf-8-sig'), f"FaultGuard_{stem}_summary.csv", 'text/csv', key='fp_sum')
-    st.markdown("#### 📘 FMEA reference: how S, O, D and the risks are set")
-    st.caption(fg.FMEA_BASIS)
-    st.dataframe(fg.fmea_reference(a), hide_index=True, width=STRETCH,
-                 column_config={'Risk (%) criteria': st.column_config.TextColumn(width='large'), 'Definition': st.column_config.TextColumn(width='medium')})
-    st.dataframe(pd.DataFrame(fg.FMEA_SCALES, columns=['Scale', 'Rule']), hide_index=True, width=STRETCH,
-                 column_config={'Rule': st.column_config.TextColumn(width='large')})
 
 
 # ==========================================
@@ -743,8 +737,8 @@ def stats_page(R):
 # ==========================================
 # --- 8. Tabs ---
 # ==========================================
-tabs = st.tabs(["🏭 Incidents Overview", "⚡ Incident Analysis", "📄 Combined Report", "📈 Incident Statistics"])
-T_OV, T_AN, T_REP, T_STAT = tabs
+tabs = st.tabs(["🏭 Incidents Overview", "⚡ Incident Analysis", "📄 Combined Report", "📈 Incident Statistics", "📘 FMEA Reference"])
+T_OV, T_AN, T_REP, T_STAT, T_FMEA = tabs
 
 OV_COLS = ['Incident', 'Date', 'Line', 'Fault Type', 'Location', 'Fault Current (kA)', 'Protection', 'Operate (ms)', 'Breaker (ms)', 'Clearing (ms)',
            'Auto-Reclose', 'Governing Aspect', 'Overall Risk (%)', 'Status', 'RPN', 'RPN Level', 'Source', 'Action']
@@ -880,5 +874,22 @@ with T_STAT:
         st.markdown("<h3 style='text-align:center;color:#888;margin-top:30px'>💡 No incidents yet.</h3>", unsafe_allow_html=True)
     else:
         stats_page(pd.DataFrame(recs))
+
+with T_FMEA:
+    st.markdown("<div class='pg-note'><b>📘 FMEA reference</b>: how the failure modes, Severity (S), Occurrence (O), Detection (D), the RPN and the "
+                "incident risk are set. The last column shows the calculation for the incident analyzed last on the Incident Analysis page.</div>",
+                unsafe_allow_html=True)
+    st.caption(fg.FMEA_BASIS)
+    _last = st.session_state.get('last')
+    _a = _last[0] if _last else None
+    if _a is not None:
+        st.markdown(f"**Incident:** {_a['meta'].get('Line', '')} · {_a['meta'].get('Incident', '')} · incident risk {_a['Overall Risk (%)']:.0f}% "
+                    f"(governing: {_a['Governing Mode']})")
+    st.markdown("#### Failure modes")
+    st.dataframe(fg.fmea_reference(_a), hide_index=True, width=STRETCH,
+                 column_config={'Risk (%) criteria': st.column_config.TextColumn(width='large'), 'Definition': st.column_config.TextColumn(width='medium')})
+    st.markdown("#### Scales and rules")
+    st.dataframe(pd.DataFrame(fg.FMEA_SCALES, columns=['Scale', 'Rule']), hide_index=True, width=STRETCH,
+                 column_config={'Rule': st.column_config.TextColumn(width='large')})
 
 st.markdown(FOOTER, unsafe_allow_html=True)
