@@ -114,12 +114,18 @@ def incident_pdf(a, rec):
     buf, doc, deco = _doc(f"Trip Report - {eq}")
     S = [P('Trip Report', H1), Paragraph(f"<font size='13' color='#0b2e59'><b>{clean(eq)}</b></font>", BODY), Spacer(1, 3),
          P(f"Incident {meta.get('Incident', '')}  -  {meta.get('Date', '')}  -  relays: {meta.get('Relay', '')}", SMALL), Spacer(1, 4)]
-    title = 'TEST RECORD' if a.get('likely_test') else f"{SLAB[a['Status']]}  -  incident risk {a['Overall Risk (%)']:.0f}%"
+    title = 'TEST RECORD' if a.get('likely_test') else fg.risk_title(a, SLAB[a['Status']])
     S.append(banner(title, fg.summary_text(a), 'EXCELLENT' if a.get('likely_test') else a['Status']))
+    if not a.get('likely_test'):
+        S.append(P(fg.risk_note(a), SMALL))
     if a.get('fault') and is_line:
         S.append(P('Fault location on the line', H2))
         S.append(fig_image(line_fig(a)))
     if a.get('fault'):
+        tl = fg.timeline_fig(a, rec)
+        if tl is not None:
+            S.append(fig_image(tl))
+        S.append(PageBreak())
         S.append(P('Fault analysis: FaultGuard AI against the relays', H2))
         C = fg.compare_table(a)
         cols = list(C.columns)
@@ -130,9 +136,10 @@ def incident_pdf(a, rec):
             S.append(P(f"Line re-energised at {pd.Timestamp(rs['time']):%Y-%m-%d %H:%M:%S}, {fg.fmt_dur(rs['after_s'])} after the fault ({rs['device']}: {rs['event']}).", SMALL))
         for n in a.get('notes', []):
             S.append(P(n, SMALL))
-        S.append(PageBreak())
-        S.append(P('Disturbance record: currents, voltages and relay contacts', H2))
-        S.append(fig_image(wave_fig(rec, a)))
+        for k_, (r_, a_) in enumerate([(rec, a)] + [(r2, a2) for _, r2, a2 in (a.get('other_records') or [])]):
+            S.append(PageBreak())
+            S.append(P(f"Disturbance record {k_ + 1}: {fg.record_source(r_, a_)} - currents, voltages and relay contacts", H2))
+            S.append(fig_image(wave_fig(r_, a_), W if k_ == 0 else W))
         if a.get('traj') is not None and is_line:
             S.append(PageBreak())
             S.append(P('Impedance seen by the relay (R-X)', H2))

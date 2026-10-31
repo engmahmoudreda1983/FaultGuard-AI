@@ -577,7 +577,8 @@ def show_incident(a, rec):
     if a.get('likely_test'):
         banner(STATUS_LABEL['TEST'], fg.summary_text(a), col)
     else:
-        banner(f"{STATUS_LABEL[sk]} · incident risk {a['Overall Risk (%)']:.0f}%", fg.summary_text(a), col)
+        banner(fg.risk_title(a, STATUS_LABEL[sk]), fg.summary_text(a), col)
+        st.caption(fg.risk_note(a))
     st.caption(f"Record: {rec['format']}, {len(rec['analog'])} analog / {len(rec['digital'])} binary channels, "
                f"{(rec['t'][-1] - rec['t'][0]) * 1000:.0f} ms, {1 / np.median(np.diff(rec['t'])):.0f} samples/s"
                + (f" · event list: {len(a['events'])} events" if a.get('events') is not None else " · no event list"))
@@ -610,12 +611,16 @@ def show_incident(a, rec):
     if is_line:
         st.markdown("#### Fault location on the line")
         mpl(fg.line_fig(a))
+    tl = fg.timeline_fig(a, rec)
+    if tl is not None:
+        mpl(tl)
     c1, c2, c3 = st.columns([0.9, 1.1, 1])
     c1.plotly_chart(gauge(a['Overall Risk (%)'], col), width=STRETCH, key='fp_g')
     c2.plotly_chart(mode_plot(a['Mode Risks']), width=STRETCH, key='fp_m')
     c3.plotly_chart(prob_plot(a), width=STRETCH, key='fp_p')
-    st.markdown("#### Disturbance record: currents (CT), voltages (VT) and relay contacts")
-    mpl(fg.wave_fig(rec, a))
+    for k_, (r_, a_) in enumerate([(rec, a)] + [(r2, a2) for _, r2, a2 in (a.get('other_records') or [])]):
+        st.markdown(f"#### Disturbance record {k_ + 1}: {fg.record_source(r_, a_)}")
+        mpl(fg.wave_fig(r_, a_))
     with st.expander("🔎 Interactive view of the whole record (zoom and hover)"):
         st.plotly_chart(wave_plot(rec, a), width=STRETCH, key='fp_w')
     c1, c2 = st.columns([1, 1.05]) if is_line else (None, st.container())

@@ -764,12 +764,6 @@ def compare_table(a):
             else:
                 r[dev] = str(v.get(key, '-')) if key else '-'
         out.append(r)
-    if reps:
-        r = {'Quantity': 'Relay clock', 'FaultGuard AI': 'record time'}
-        for dev, v in reps.items():
-            sh, off = v.get('Clock Shift (h)', 0), v.get('Clock vs record (ms)')
-            r[dev] = (f"{sh:+d} h, " if sh else '') + (f"{off:+.0f} ms" if off is not None else '-')
-        out.append(r)
     return pd.DataFrame(out)
 
 
@@ -1867,7 +1861,7 @@ def wave_fig(rec, a, width=10, height=None):
     ch = a['channels']
     t, t0, t1 = _window(rec, a)
     m = (t >= t0) & (t <= t1)
-    rows, srcs = binary_rows(rec, a, t0, t1)
+    rows, srcs = binary_rows(rec, a, t0, t1, own_only=True)
     nb = len(rows)
     height = height or (6.2 + 0.3 * nb)
     ratios = [3, 3] + ([max(1.3, 0.3 * nb)] if nb else [])
@@ -1912,7 +1906,7 @@ def wave_fig(rec, a, width=10, height=None):
                  fontsize=8, color='#333', bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='#ccc'))
     if nb:
         axB = axs[2]
-        axB.set_title('Binary signals - ' + ';  '.join(srcs), loc='left', fontsize=9.2, fontweight='bold', color='#0b2e59')
+        axB.set_title(f'Binary signals - relay contacts    [record: {rsrc}, {srcs[0].split(": ", 1)[-1]}]', loc='left', fontsize=9.2, fontweight='bold', color='#0b2e59')
         src_col = {}
         palette = ['#0b2e59', '#8e24aa', '#00796b', '#bf360c']
         for k_, (nm, src, iv) in enumerate(rows):
@@ -1923,7 +1917,7 @@ def wave_fig(rec, a, width=10, height=None):
                                 hatch=None if src == rows[0][1] else '////')
             src_col.setdefault(src, palette[len(src_col) % len(palette)])
         axB.set_yticks(range(nb))
-        labs = [f"{nm[:20]}  [{src}]" for nm, src, _ in rows][::-1]
+        labs = [nm[:24] for nm, src, _ in rows][::-1]
         axB.set_yticklabels(labs, fontsize=7.3)
         for tl, (nm, src, _) in zip(axB.get_yticklabels(), rows[::-1]):
             tl.set_color(src_col[src])
@@ -2031,7 +2025,7 @@ def record_source(rec, a):
     return f"{dev} ({st_})" if dev and st_ else (dev or st_ or 'record')
 
 
-def binary_rows(rec, a, t0, t1, max_rows=22):
+def binary_rows(rec, a, t0, t1, max_rows=22, own_only=False):
     """Binary signals around the fault from every source: the main record's channels, the other records (aligned on the
     fault inception) and the event lists of relays without a record. Returns ([(name, source, [(start, end) ms])], legend)."""
     rows, legend = [], []
@@ -2049,6 +2043,8 @@ def binary_rows(rec, a, t0, t1, max_rows=22):
         legend.append(f"{tag}: {n_} of {D.shape[1]} record channels changed")
     main_tag = a.get('record_device') or (rec.get('station') or 'record').strip().title()
     from_record(rec, a, 0.0, main_tag)
+    if own_only:
+        return rows[:max_rows], legend
     have = {main_tag}
     for n_, r2, a2 in a.get('other_records') or []:
         if a2.get('t_inception_ms') is None or a.get('t_inception_ms') is None:
@@ -2082,3 +2078,105 @@ def binary_rows(rec, a, t0, t1, max_rows=22):
             if n_:
                 legend.append(f"{dev}: {n_} signals from its event list (aligned)")
     return rows[:max_rows], legend
+
+
+
+def risk_title(a, lab):
+    """Banner title that says where the incident risk comes from (the FMEA failure modes)."""
+    return f"{lab} - incident risk {a['Overall Risk (%)']:.0f}% (FMEA failure modes, governing: {a['Governing Mode']})"
+
+
+def risk_note(a):
+    others = a.get('Other Modes Above Normal', 0)
+    return (f"Incident risk = the highest of the five failure-mode risks in the FMEA table ({a['Governing Mode']} {a['Mode Risks'][a['Governing Mode']]:.0f}%)"
+            + (f" + 5 points for each of the {others} other mode(s) above 35%" if others else '') + '. Normal up to 35%, watch 35-70%, action above 70%.')
+
+
+# ---------------------------------------------------------------- sequence of events timeline (under the line diagram)
+_CATS = [('intertrip', r'intertrip|inter\s*trip|dtt|transfer trip', 'Intertrip', '#8e24aa'),
+         ('aided', r'aid\w*\s*\d?\s*(receive|rx|send|tx)|carrier|pott|dcb|permissive', 'Aided signal', '#1f5fbf'),
+         ('tripcmd', r'trip\s*(output|o/p|3\s*ph|cmd|command)|general\s*trip', 'Trip command', '#b71c1c'),
+         ('trip', r'trip', 'Protection element', '#d62728'),
+         ('start', r'start|pick\s*-?up', 'Start', '#e3a400'),
+         ('cb', r'cb\s*open|pole\s*dead|52\s*b|breaker\s*open|all\s*poles', 'CB open / pole dead', '#1a9e5c'),
+         ('ar', r'\bar\b|reclos|79', 'Auto-reclose', '#0b2e59')]
+
+
+def _cat(name):
+    for k, pat, lab, col in _CATS:
+        if _re.search(pat, name, _re.I):
+            return k, lab, col
+    return None
+
+
+def event_timeline(a, recs=None):
+    """Key instants of the incident from the records and the event lists: (ms from fault inception, label, colour)."""
+    inc = a.get('t_inception_ms')
+    if inc is None:
+        return []
+    items = [(0.0, 'Fault inception (record)', '#d62728', 'Fault')]
+    seen = set()
+    def add(src, name, tms):
+        c = _cat(name)
+        if c is None or tms < inc - 30 or tms > inc + 3000:
+            return
+        key = (src, c[0])
+        if key in seen:
+            return
+        seen.add(key)
+        items.append((tms - inc, f"{src}: {name}", c[2], c[1]))
+    for name_, rec_, a_ in ([('main', recs[0], a)] + list(a.get('other_records') or [])) if recs else []:
+        src = a_.get('record_device') or 'record'
+        shift = inc - a_['t_inception_ms'] if a_ is not a and a_.get('t_inception_ms') is not None else 0.0
+        for tm, nm, v in a_.get('binary', []):
+            if v == 1 and not _re.search(r'unused|spare', nm, _re.I):
+                add(src, nm.strip(), tm * 1000 + shift)
+    E = a.get('events'); t0 = a.get('record_start')
+    if E is not None and t0 is not None and len(E):
+        for _, r in E.sort_values('Timestamp').iterrows():
+            ev = str(r['Event']).strip()
+            mm = _re.match(r'(.+?)\s+ON$', ev, _re.I)
+            if mm and not _re.search(r'virtual|output contacts|logic inputs|any start|any trip', mm.group(1), _re.I):
+                add(str(r['Device']), mm.group(1).strip(), (pd.Timestamp(r['Timestamp']) - pd.Timestamp(t0)).total_seconds() * 1000)
+    if a.get('t_interruption_ms') is not None:
+        items.append((a['t_interruption_ms'] - inc, 'Fault current interrupted (record)', '#1a9e5c', 'Cleared'))
+    if a.get('t_reclose_ms') is not None:
+        items.append((a['t_reclose_ms'] - inc, 'Line re-energised (record)', '#0b2e59', 'Reclose'))
+    return sorted(items, key=lambda x: x[0])
+
+
+def timeline_fig(a, rec=None, width=10, height=4.4):
+    items = event_timeline(a, [rec] if rec is not None else None)
+    if not items:
+        return None
+    tmax = max(x[0] for x in items)
+    span = max(tmax, 20.0)
+    fig, ax = plt.subplots(figsize=(width, height))
+    x0, x1 = -0.06 * span, span * 1.06
+    ax.set_xlim(x0, x1 + (0.22 * span if a.get('restored') else 0)); ax.set_ylim(-5.6, 5.6); ax.axis('off')
+    ax.annotate('', xy=(x1, 0), xytext=(x0, 0), arrowprops=dict(arrowstyle='-|>', color='#333', lw=1.6))
+    for v in np.linspace(0, span, 6):
+        ax.plot([v, v], [-0.12, 0.12], color='#333', lw=1); ax.text(v, -0.32, f"{v:.0f} ms", ha='center', va='top', fontsize=7, color='#555')
+    lv = [0.8, -0.8, 2.3, -2.3, 3.8, -3.8]
+    last = {}
+    gap = 0.15 * (x1 - x0)
+    for tm, lab, col, cat in items:
+        free = [y for y in lv if y not in last or tm - last[y] >= gap]
+        y = free[0] if free else min(lv, key=lambda y_: last[y_])
+        last[y] = tm
+        ax.plot([tm, tm], [0, y], color=col, lw=0.9, alpha=0.8)
+        ax.plot(tm, 0, 'o', color=col, ms=7, zorder=5, mec='white')
+        src, _, nm = lab.partition(': ')
+        txt = (f"{src}\n{nm}" if nm else src) + (f"\n+{tm:.0f} ms" if tm > 0 else '')
+        ax.text(tm, y, txt, ha='center', va='bottom' if y > 0 else 'top', fontsize=6.9, color=col, fontweight='bold', linespacing=1.05,
+                bbox=dict(boxstyle='round,pad=0.2', fc='white', ec=col, lw=0.7), zorder=6)
+    rs = a.get('restored')
+    if rs:
+        xr = x1 + 0.13 * span
+        ax.plot([x1 + 0.02 * span, x1 + 0.05 * span], [0, 0], color='#333', lw=1.6, ls=(0, (2, 2)))
+        ax.plot(xr, 0, 's', color='#0b2e59', ms=8)
+        ax.text(xr, 0.8, f"Line re-energised\nafter {fmt_dur(rs['after_s'])}", ha='center', va='bottom', fontsize=7.2, color='#0b2e59', fontweight='bold',
+                bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='#0b2e59', lw=0.7))
+    ax.set_title('Sequence of events (time from fault inception)', loc='left', fontsize=9.5, fontweight='bold', color='#0b2e59')
+    fig.tight_layout()
+    return fig
