@@ -104,46 +104,7 @@ GREEN, AMBER, RED, NAVYH = '#1a9e5c', '#d99a00', '#d63a3a', '#0b2e59'
 PH_COL = {'A': '#d63a3a', 'B': '#d99a00', 'C': '#2a78d6', 'N': '#555555'}
 
 
-def wave_fig(rec, a, width=10, height=5.4):
-    A = a.get('A'); ch = a['channels']; t = (rec['t'] - rec['t'][0]) * 1000
-    fig, axs = plt.subplots(2, 1, figsize=(width, height), sharex=True)
-    for p in 'ABC':
-        if ch.get('I' + p) is not None:
-            axs[0].plot(t, A[:, ch['I' + p]] / 1000, lw=0.7, color=PH_COL[p], label='I' + p)
-        if ch.get('V' + p) is not None:
-            axs[1].plot(t, A[:, ch['V' + p]] / 1000, lw=0.7, color=PH_COL[p], label='V' + p)
-    if ch.get('IN') is not None:
-        axs[0].plot(t, A[:, ch['IN']] / 1000, lw=0.6, color=PH_COL['N'], label='IN')
-    for k_i, (key, col, lab) in enumerate([('t_inception_ms', AMBER, 'Fault'), ('t_trip_ms', RED, 'Trip'), ('t_interruption_ms', GREEN, 'Cleared'), ('t_reclose_ms', NAVYH, 'Reclose')]):
-        v = a.get(key)
-        if v is not None:
-            for ax in axs:
-                ax.axvline(v, color=col, ls='--', lw=0.9)
-            yl = axs[0].get_ylim(); axs[0].text(v, yl[1] - (yl[1] - yl[0]) * 0.09 * k_i, f' {lab}', color=col, fontsize=8, va='top')
-    axs[0].set_ylabel('Current (kA)'); axs[1].set_ylabel('Voltage (kV)'); axs[1].set_xlabel('ms from record start')
-    for ax in axs:
-        ax.legend(fontsize=7, ncol=4, loc='upper right', frameon=False); ax.grid(alpha=.25)
-    return fig
-
-
-def rx_fig(a, width=5.2, height=4.4):
-    line = a['line']; st = a['setting']; Z = complex(line['r1'], line['x1']) * line['length_km']
-    fig, ax = plt.subplots(figsize=(width, height))
-    for lab, col, xs, ys, kind in fg.zone_shapes(a):
-        ax.plot(xs, ys, color=col, lw=1, label=lab)
-    ax.plot([0, Z.real], [0, Z.imag], color='#555', lw=1.5, label='Line impedance')
-    z = a.get('traj')
-    if z is not None:
-        z = z[np.isfinite(z)]
-        z = z[np.abs(z) < 5 * abs(Z)]
-        ax.plot(z.real, z.imag, '.', ms=2.5, color=NAVYH, label='Apparent impedance')
-    if a.get('Zapp') is not None:
-        ax.plot(a['Zapp'].real, a['Zapp'].imag, 'o', color=RED, ms=6, label='At the fault')
-    ext = [max(max(xs), max(ys)) for _, _, xs, ys, _ in fg.zone_shapes(a)]
-    lim = max([1.5 * abs(Z) * st['z2_reach']] + [e * 1.1 for e in ext])
-    ax.set_xlim(-0.35 * lim, lim); ax.set_ylim(-0.35 * lim, 1.05 * lim); ax.set_aspect('equal')
-    ax.set_xlabel('R (ohm primary)'); ax.set_ylabel('X (ohm primary)'); ax.grid(alpha=.25); ax.legend(fontsize=7, loc='lower right', frameon=False)
-    return fig
+wave_fig, rx_fig, line_fig = fg.wave_fig, fg.rx_fig, fg.line_fig
 
 
 def incident_pdf(a, rec):
@@ -153,15 +114,10 @@ def incident_pdf(a, rec):
          P(f"{meta.get('Incident', '')}  -  {meta.get('Station', '')}  -  {meta.get('Line', '')}  -  {meta.get('Date', '')}", SMALL), Spacer(1, 4)]
     title = 'TEST RECORD' if a.get('likely_test') else f"{SLAB[a['Status']]}  -  incident risk {a['Overall Risk (%)']:.0f}%"
     S.append(banner(title, fg.summary_text(a), 'EXCELLENT' if a.get('likely_test') else a['Status']))
-    S.append(P('Incident', H2))
-    S.append(table([['Item', 'Value', 'Item', 'Value'],
-                    ['Station', meta.get('Station', '-') or '-', 'Line / bay', meta.get('Line', '-') or '-'],
-                    ['Relay', meta.get('Relay', '-') or '-', 'Record start', str(a.get('record_start') or '-')[:23]],
-                    ['Line length', f"{a['line']['length_km']:.1f} km", 'Line impedance (per km)', f"Z1 {a['line']['r1']:.3f}+j{a['line']['x1']:.3f}, Z0 {a['line']['r0']:.3f}+j{a['line']['x0']:.3f} ohm"]],
-                   [W * 0.16, W * 0.34, W * 0.18, W * 0.32]))
     if a.get('fault'):
-        conf = f"{a['type_conf'] * 100:.0f}%"
-        S.append(P('Fault', H2))
+        S.append(P('Fault location on the line', H2))
+        S.append(fig_image(line_fig(a)))
+        S.append(P('Fault analysis: FaultGuard AI against the relays', H2))
         C = fg.compare_table(a)
         cols = list(C.columns)
         wq = 0.17; wr = (1 - wq) / (len(cols) - 1)
@@ -171,6 +127,33 @@ def incident_pdf(a, rec):
             S.append(P(f"Line re-energised at {pd.Timestamp(rs['time']):%Y-%m-%d %H:%M:%S}, {fg.fmt_dur(rs['after_s'])} after the fault ({rs['device']}: {rs['event']}).", SMALL))
         for n in a.get('notes', []):
             S.append(P(n, SMALL))
+        S.append(PageBreak())
+        S.append(P('Disturbance record: currents, voltages and relay contacts', H2))
+        S.append(fig_image(wave_fig(rec, a)))
+        if a.get('traj') is not None:
+            S.append(PageBreak())
+            S.append(P('Impedance seen by the relay (R-X)', H2))
+            S.append(fig_image(rx_fig(a), W * 0.92))
+            zs = a.get('zone_seen')
+            if zs is not None:
+                S.append(P('The star marks the impedance one cycle into the fault; the blue dots show its path from the load point into the fault. '
+                           + ('It lies outside every zone.' if zs == 0 else f"It lies inside zone {zs}."), SMALL))
+    else:
+        for n in a.get('notes', []):
+            S.append(P(n))
+    S.append(P('Incident', H2))
+    S.append(table([['Item', 'Value', 'Item', 'Value'],
+                    ['Station', meta.get('Station', '-') or '-', 'Line / bay', meta.get('Line', '-') or '-'],
+                    ['Relay', meta.get('Relay', '-') or '-', 'Record start', str(a.get('record_start') or '-')[:23]],
+                    ['Line length', f"{a['line']['length_km']:.1f} km", 'Line impedance (per km)', f"Z1 {a['line']['r1']:.3f}+j{a['line']['x1']:.3f}, Z0 {a['line']['r0']:.3f}+j{a['line']['x0']:.3f} ohm"]],
+                   [W * 0.16, W * 0.34, W * 0.18, W * 0.32]))
+    if a.get('fault'):
+        rows = [['Channel', 'Pre-fault (rms)', 'Fault (rms)', 'Fault angle']]
+        for k in ('IA', 'IB', 'IC', 'IN', 'VA', 'VB', 'VC'):
+            if k in a['P']:
+                pre, flt = a['P'][k]; u = 'kA' if k.startswith('I') else 'kV'
+                rows.append([k, f"{abs(pre) / 1000:.3f} {u}", f"{abs(flt) / 1000:.3f} {u}", f"{np.degrees(np.angle(flt)):.0f} deg"])
+        S.append(KeepTogether([P('Measured values (primary)', H2), table(rows, [W * 0.2, W * 0.27, W * 0.27, W * 0.26])]))
         if len(a.get('records') or []) > 1:
             R_ = pd.DataFrame(a['records'])[['Record', 'Station', 'Fault Type', 'Location (km)', 'Fault Current (kA)', 'Trip (ms)', 'Breaker (ms)', 'Clearing (ms)', 'Voltages']]
             S.append(KeepTogether([P('Disturbance records of this incident', H2),
@@ -180,18 +163,6 @@ def incident_pdf(a, rec):
             T_ = T_[(T_.iloc[:, 1:] != '-').any(axis=1)]
             S.append(KeepTogether([P('Relay settings used', H2),
                                    table([list(T_.columns)] + T_.astype(str).values.tolist(), [W * 0.3] + [W * 0.7 / (len(T_.columns) - 1)] * (len(T_.columns) - 1))]))
-        rows = [['Channel', 'Pre-fault (rms)', 'Fault (rms)', 'Fault angle']]
-        for k in ('IA', 'IB', 'IC', 'IN', 'VA', 'VB', 'VC'):
-            if k in a['P']:
-                pre, flt = a['P'][k]; u = 'kA' if k.startswith('I') else 'kV'
-                rows.append([k, f"{abs(pre) / 1000:.3f} {u}", f"{abs(flt) / 1000:.3f} {u}", f"{np.degrees(np.angle(flt)):.0f} deg"])
-        S.append(KeepTogether([P('Measured values (primary)', H2), table(rows, [W * 0.2, W * 0.27, W * 0.27, W * 0.26])]))
-        S.append(KeepTogether([P('Waveforms', H2), fig_image(wave_fig(rec, a))]))
-        if a.get('traj') is not None:
-            S.append(KeepTogether([P('Impedance seen by the relay (R-X)', H2), fig_image(rx_fig(a), W * 0.6)]))
-    if not a.get('fault'):
-        for n in a.get('notes', []):
-            S.append(P(n))
     S.append(P('Assessment', H2))
     for r in fg.findings(a):
         S.append(P(f"- {r}"))

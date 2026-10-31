@@ -15,8 +15,8 @@ auto-recloser is normally out of service, so auto-reclose is reported but not as
 - **Incident Analysis**: demo incident or uploaded files, incident data, line data (per-km sequence impedances or the
   relay settings: line impedance, angle, kZN), protection settings and scaling. PDF report and CSV downloads.
 - **Combined Report**: PDF, text, table and FMEA CSV.
-- **Incident Statistics**: faults by line, type and month, auto-reclose success, repeated faults at the same place.
-- **AI Model Accuracy**: accuracy on unseen simulated incidents, confusion matrix, location error.
+- **Incident Statistics**: faults by line, type and month, repeated faults at the same place, and FaultGuard against the relays' own
+  fault records (fault type agreement and location difference) over all analyzed incidents.
 
 ## Files
 - `faultguard_core.py`: engine (record readers, phasors, fault detection, AI type, Takagi location, event parsing and

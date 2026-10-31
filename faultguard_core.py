@@ -19,6 +19,9 @@ from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 import comtrade_features as cf
 
@@ -1751,3 +1754,216 @@ def zone_seen(a):
         if Path(np.column_stack([xs, ys])).contains_point((a['Zapp'].real, a['Zapp'].imag)):
             return int(re.search(r'Zone (\d)', lab).group(1))
     return 0
+
+
+# ---------------------------------------------------------------- professional figures (shared by the app and the PDF)
+import re as _re
+from matplotlib.patches import Polygon as _Poly, FancyBboxPatch as _Box
+PH_C = {'A': '#d62728', 'B': '#e3a400', 'C': '#1f5fbf', 'N': '#222222'}
+
+
+def stations(a):
+    """Names of the two line ends: from 'A - B' / 'A to B' in the line name, else the station and 'Remote end'."""
+    m = a.get('meta', {}) or {}
+    ln = str(m.get('Line') or '')
+    tidy = lambda x: _re.sub(r'\s{2,}', ' ', _re.sub(r'\b(\d+\s*kv|s/?s|substation|sub|bay|\d+[a-z]?|l\d+|line)\b', '', str(x), flags=_re.I)).strip(' -').title()
+    sA = tidy(m.get('Station') or a.get('station') or '') or 'Station A'
+    if not _re.search(r'\s-\s|\bto\b', ln, _re.I):
+        used = a.get('settings_used')
+        desc = (used[1].get('description') if used else '') or ''
+        rb = tidy(desc)
+        if rb and rb.lower() != sA.lower():
+            return sA, rb
+    parts = _re.split(r'\s+-\s+|\s*\bto\b\s*|\s*–\s*', ' ' + _re.sub(r'\b(L\d+|line\s*\d+)\b', '', ln, flags=_re.I) + ' ')
+    parts = [p.strip(' -') for p in parts if p.strip(' -')]
+    if len(parts) == 1 and _re.search(r'\bto\b', ln, _re.I):
+        parts = [sA, parts[0]]
+    if len(parts) >= 2:
+        A_, B_ = parts[0], parts[1]
+        if sA and A_.lower().split()[0] not in sA.lower() and B_.lower().split()[0] in sA.lower():
+            A_, B_ = B_, A_
+        return A_, B_
+    return sA, 'Remote end'
+
+
+def _bolt(ax, x, y, h, w, color='#d62728'):
+    """Lightning bolt pointing down to (x, y); h in y units, w in x units."""
+    pts = [(x, y), (x - w * 0.15, y + h * 0.45), (x + w * 0.35, y + h * 0.45), (x - w * 0.25, y + h),
+           (x + w * 0.55, y + h), (x + w * 0.6, y + h * 0.55), (x + w * 0.1, y + h * 0.55), (x + w * 0.45, y + h * 0.1)]
+    ax.add_patch(_Poly(pts, closed=True, fc=color, ec='#7a0000', lw=0.8, zorder=6))
+
+
+def line_fig(a, width=10, height=3.3):
+    """Single-line view: station A -- line -- station B, fault bolt at the located distance, zone reaches, relay estimates."""
+    L = a['line']['length_km']; st = a['setting']
+    A_, B_ = stations(a)
+    loc = a.get('loc_km')
+    xmax = max(L * 1.12, (loc or 0) * 1.06)
+    fig, ax = plt.subplots(figsize=(width, height))
+    ax.set_xlim(-0.12 * L, xmax); ax.set_ylim(-2.6, 2.4); ax.axis('off')
+    ax.plot([0, L], [0, 0], color='#3b3b3b', lw=4, solid_capstyle='butt', zorder=2)
+    if loc is not None and loc > L:
+        ax.plot([L, loc * 1.03], [0, 0], color='#9a9a9a', lw=2.5, ls='--', zorder=2)
+        ax.text((L + loc) / 2, 0.25, 'adjacent line', ha='center', fontsize=7.5, color='#777')
+    for x, name, ha in ((0, A_, 'right'), (L, B_, 'left')):
+        ax.plot([x, x], [-0.75, 0.75], color='#0b2e59', lw=7, solid_capstyle='butt', zorder=3)
+        ax.add_patch(_Box((x - 0.012 * L, -0.11), 0.024 * L, 0.22, boxstyle='square,pad=0', fc='white', ec='#0b2e59', lw=1.2, zorder=4))
+        ax.text(x + (-0.02 * L if ha == 'right' else 0.02 * L), 0.95, name, ha=ha, va='bottom', fontsize=11, fontweight='bold', color='#0b2e59')
+    ax.text(0, -0.95, 'relay', ha='center', va='top', fontsize=7, color='#555')
+    # zone reaches under the line
+    for i, (k, lab, col) in enumerate([('z1_reach', 'Zone 1', '#d62728'), ('z2_reach', 'Zone 2', '#e3a400')]):
+        r = st.get(k)
+        if r:
+            y = -1.45 - 0.45 * i
+            ax.annotate('', xy=(min(r * L, xmax * 0.995), y), xytext=(0, y), arrowprops=dict(arrowstyle='-|>', color=col, lw=2.2))
+            ax.text(min(r * L, xmax * 0.995), y + 0.08, f" {lab} {r * 100:.0f}%", va='bottom', ha='right' if r * L > xmax * 0.9 else 'left',
+                    fontsize=8, color=col, fontweight='bold')
+    # relay estimates
+    reps = a.get('relay_reports') or {}
+    k = 0
+    for dev, v in reps.items():
+        m_ = _re.match(r'(-?\d+(?:\.\d+)?)\s*km', str(v.get('Relay Fault Location', '')))
+        if m_:
+            x = float(m_.group(1))
+            ax.plot(x, -0.32, marker='^', ms=9, color='#1f5fbf', zorder=5)
+            ax.text(x, -0.55 - 0.34 * (k % 2), f"{dev} {x:.1f} km", ha='right' if x > 0.9 * L else 'center', va='top', fontsize=7.5, color='#1f5fbf')
+            k += 1
+    if a.get('loc_two_ended_km') is not None:
+        x = a['loc_two_ended_km']; ax.plot(x, 0.32, marker='v', ms=9, color='#1a9e5c', zorder=5)
+    if loc is not None:
+        _bolt(ax, loc, 0.12, 1.25, 0.05 * L)
+        typ = a.get('type', '')
+        ax.text(loc, 1.48, f"{typ} fault\n{loc:.1f} km ({loc / L * 100:.0f}%)", ha='center', va='bottom', fontsize=9.5, fontweight='bold', color='#d62728',
+                bbox=dict(boxstyle='round,pad=0.3', fc='white', ec='#d62728', lw=1))
+        if loc <= L:
+            ax.text(loc / 2, 0.2, f"{loc:.1f} km", ha='center', va='bottom', fontsize=8.5, color='#333')
+            if L - loc > 0.06 * L:
+                ax.text((loc + L) / 2, 0.2, f"{L - loc:.1f} km", ha='center', va='bottom', fontsize=8.5, color='#333')
+    ax.text(L / 2, -0.42 if not reps else 2.25, f"Line length {L:.1f} km", ha='center', fontsize=8, color='#666')
+    fig.tight_layout()
+    return fig
+
+
+def _window(rec, a):
+    t = (rec['t'] - rec['t'][0]) * 1000
+    inc = a.get('t_inception_ms') or 0
+    ends = [v for v in (a.get('t_interruption_ms'), a.get('t_trip_ms'), a.get('t_reclose_ms'), a.get('t_refault_ms')) if v is not None]
+    chg = [c[0] * 1000 for c in a.get('binary', [])]
+    last = max(ends + [inc + 100] + [c for c in chg if c < (max(ends) if ends else inc) + 400])
+    t0 = max(t[0], inc - 80); t1 = min(t[-1], last + 120)
+    return t, t0, t1
+
+
+def wave_fig(rec, a, width=10, height=None):
+    """Currents (CT), voltages (VT) and binary contacts around the fault, with the key instants marked."""
+    A = a.get('A')
+    if A is None:
+        A = scale_primary(rec)
+    ch = a['channels']
+    t, t0, t1 = _window(rec, a)
+    m = (t >= t0) & (t <= t1)
+    D = rec['D']
+    act = [j for j in range(D.shape[1]) if D[m, j].any() and not _re.search(r'unused|spare', rec['digital'][j], _re.I)][:16]
+    nb = len(act)
+    height = height or (6.2 + 0.28 * nb)
+    ratios = [3, 3] + ([max(1.2, 0.28 * nb)] if nb else [])
+    fig, axs = plt.subplots(len(ratios), 1, figsize=(width, height), sharex=True, gridspec_kw={'height_ratios': ratios, 'hspace': 0.12})
+    axI, axV = axs[0], axs[1]
+    for p in 'ABC':
+        if ch.get('I' + p) is not None:
+            axI.plot(t[m], A[m, ch['I' + p]] / 1000, lw=1.1, color=PH_C[p], label='I' + p)
+        if ch.get('V' + p) is not None:
+            axV.plot(t[m], A[m, ch['V' + p]] / 1000, lw=1.1, color=PH_C[p], label='V' + p)
+    if ch.get('IN') is not None:
+        axI.plot(t[m], A[m, ch['IN']] / 1000, lw=1.0, color=PH_C['N'], ls='--', label='IN')
+    axI.set_ylabel('Current (kA)', fontsize=9); axV.set_ylabel('Voltage (kV)', fontsize=9)
+    axI.set_title('Currents (primary) - CT', loc='left', fontsize=9.5, fontweight='bold', color='#0b2e59')
+    axV.set_title('Voltages (primary) - VT', loc='left', fontsize=9.5, fontweight='bold', color='#0b2e59')
+    inc, intr = a.get('t_inception_ms'), a.get('t_interruption_ms')
+    for ax in axs:
+        ax.grid(alpha=.3, lw=0.6); ax.tick_params(labelsize=8)
+        if inc is not None:
+            ax.axvspan(inc, intr if intr is not None else t1, color='#d62728', alpha=0.06, lw=0)
+    marks = [('t_inception_ms', '#d62728', 'Fault'), ('t_trip_ms', '#7b2cbf', 'Trip'), ('t_interruption_ms', '#1a9e5c', 'Cleared'),
+             ('t_reclose_ms', '#0b2e59', 'Reclose'), ('t_refault_ms', '#d62728', 'Re-fault')]
+    yl = axI.get_ylim()
+    for i, (key, col, lab) in enumerate(marks):
+        v = a.get(key)
+        if v is None or not (t0 <= v <= t1):
+            continue
+        for ax in axs:
+            ax.axvline(v, color=col, ls='--', lw=1.2, zorder=4)
+        rel = f" +{v - inc:.0f} ms" if (inc is not None and key != 't_inception_ms') else ''
+        axI.text(v, yl[1] - (yl[1] - yl[0]) * (0.02 + 0.11 * (i % 3)), f" {lab}{rel}", color='white', fontsize=7.8, fontweight='bold', va='top', ha='left',
+                 bbox=dict(boxstyle='round,pad=0.2', fc=col, ec='none'), zorder=6)
+    axI.legend(fontsize=8, ncol=4, loc='lower right', frameon=True, framealpha=0.9)
+    axV.legend(fontsize=8, ncol=3, loc='lower right', frameon=True, framealpha=0.9)
+    if a.get('I_peak_kA'):
+        axI.text(0.01, 0.04, f"Fault current {a.get('I_fault_max_kA', 0):.2f} kA rms, peak {a['I_peak_kA']:.2f} kA", transform=axI.transAxes,
+                 fontsize=8, color='#333', bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='#ccc'))
+    if nb:
+        axB = axs[2]
+        axB.set_title('Binary signals - relay contacts', loc='left', fontsize=9.5, fontweight='bold', color='#0b2e59')
+        for k_, j in enumerate(act):
+            nm = rec['digital'][j].strip()
+            col = '#d62728' if _re.search(r'trip', nm, _re.I) else '#e3a400' if _re.search(r'start|pick', nm, _re.I) else \
+                '#1f5fbf' if _re.search(r'aid|send|rec|carrier|pott|dcb', nm, _re.I) else '#1a9e5c' if _re.search(r'cb|52|close|open', nm, _re.I) else '#777'
+            x = D[m, j]; tt = t[m]
+            on = np.flatnonzero(np.diff(np.r_[0, x, 0]))
+            for s_, e_ in zip(on[::2], on[1::2]):
+                axB.broken_barh([(tt[s_], tt[min(e_, len(tt) - 1)] - tt[s_])], (nb - 1 - k_ - 0.32, 0.64), fc=col, ec='none')
+        axB.set_yticks(range(nb)); axB.set_yticklabels([rec['digital'][j].strip()[:22] for j in act][::-1], fontsize=7.5)
+        axB.set_ylim(-0.6, nb - 0.4); axB.grid(axis='y', alpha=0)
+    axs[-1].set_xlabel('Time (ms from record start)', fontsize=9)
+    axs[-1].set_xlim(t0, t1)
+    return fig
+
+
+def rx_fig(a, width=7.2, height=6.4):
+    """R-X diagram: zones as set (quadrilateral or mho, filled), line A -> B, impedance trajectory and the fault point."""
+    line = a['line']; st = a['setting']; Z = complex(line['r1'], line['x1']) * line['length_km']
+    A_, B_ = stations(a)
+    shapes = zone_shapes(a)
+    za = a.get('Zapp')
+    lim = max(1.45 * abs(Z) * max(st.get('z2_reach', 1.2), 1.0), (abs(za) * 1.35 if za is not None and np.isfinite(za) else 0))
+    fig, ax = plt.subplots(figsize=(width, height))
+    for lab, col, xs, ys, kind in shapes:
+        ax.fill(xs, ys, fc=col, alpha=0.07, zorder=1)
+        ax.plot(xs, ys, color=col, lw=1.8, zorder=2)
+        top = max(range(len(ys)), key=lambda i: ys[i]) if kind == 'mho' else 0
+        xl, yl = xs[top], ys[top]
+        if kind == 'quad':                      # label on the reach line, inside the view
+            x0_, y0_, x1_, y1_ = xs[0], ys[0], xs[1], ys[1]
+            xl = min(max(0.62 * lim, x0_), x1_); yl = y0_ + (y1_ - y0_) * ((xl - x0_) / (x1_ - x0_) if x1_ != x0_ else 0)
+        if -0.5 * lim < xl < lim and -0.28 * lim < yl < 1.06 * lim:
+            ax.text(xl, yl, ' ' + lab.split(' (')[0] + ' ', fontsize=8.5, color=col, fontweight='bold', va='bottom', ha='center',
+                    bbox=dict(boxstyle='round,pad=0.15', fc='white', ec=col, lw=0.8), zorder=5)
+        ax.plot([], [], color=col, lw=2, label=lab)
+    ax.plot([0, Z.real], [0, Z.imag], color='#3b3b3b', lw=2.6, zorder=3)
+    ax.plot([0], [0], 's', color='#0b2e59', ms=8, zorder=4); ax.plot([Z.real], [Z.imag], 's', color='#0b2e59', ms=8, zorder=4)
+    ax.text(0, 0, f"  {A_}", fontsize=8.5, fontweight='bold', color='#0b2e59', va='top', ha='left')
+    ax.annotate(B_, xy=(Z.real, Z.imag), xytext=(Z.real + 0.12 * lim, Z.imag - 0.1 * lim), fontsize=8.5, fontweight='bold', color='#0b2e59',
+                arrowprops=dict(arrowstyle='-', color='#0b2e59', lw=0.8))
+    z = a.get('traj')
+    if z is not None and len(z):
+        z = z[np.isfinite(z)]
+        z = z[np.abs(z) < 4 * lim]
+        if len(z):
+            sc = ax.scatter(z.real, z.imag, c=np.arange(len(z)), cmap='Blues', s=10, vmin=-len(z) * 0.3, zorder=3, label='Impedance trajectory')
+            if len(z) > 3:
+                ax.annotate('', xy=(z[-1].real, z[-1].imag), xytext=(z[-3].real, z[-3].imag), arrowprops=dict(arrowstyle='-|>', color='#0b2e59', lw=1.2))
+    if za is not None and np.isfinite(za):
+        zs = a.get('zone_seen')
+        ztxt = 'outside all zones' if zs == 0 else (f"inside Zone {zs}" if zs else '')
+        ax.plot(za.real, za.imag, marker='*', ms=20, color='#d62728', mec='#7a0000', zorder=7)
+        ax.annotate(f"Fault point\nR {za.real:.1f} Ω, X {za.imag:.1f} Ω\n{ztxt}", xy=(za.real, za.imag),
+                    xytext=(za.real - 0.32 * lim, za.imag + 0.18 * lim), fontsize=8.8, fontweight='bold', color='#d62728',
+                    arrowprops=dict(arrowstyle='->', color='#d62728', lw=1.2), bbox=dict(boxstyle='round,pad=0.35', fc='white', ec='#d62728'), zorder=8)
+    ax.axhline(0, color='#999', lw=0.8); ax.axvline(0, color='#999', lw=0.8)
+    ax.legend(loc='lower right', fontsize=7.5, framealpha=0.95)
+    ax.set_xlim(-0.55 * lim, lim); ax.set_ylim(-0.3 * lim, 1.1 * lim); ax.set_aspect('equal')
+    kind = shapes[0][4] if shapes else 'mho'
+    src_ = 'from the relay settings' if a.get('settings_used') else 'as entered'
+    ax.set_title(f"Impedance seen by the relay ({'quadrilateral' if kind == 'quad' else 'mho'} zones {src_})", fontsize=10, fontweight='bold', color='#0b2e59', loc='left')
+    ax.set_xlabel('R (Ω primary)', fontsize=9); ax.set_ylabel('X (Ω primary)', fontsize=9); ax.grid(alpha=.3, lw=0.6); ax.tick_params(labelsize=8)
+    return fig

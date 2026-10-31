@@ -1,4 +1,5 @@
 import hmac
+import re
 import io
 import zipfile
 from datetime import datetime
@@ -6,6 +7,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import matplotlib.pyplot as plt
 from plotly.subplots import make_subplots
 import streamlit as st
 
@@ -136,6 +138,11 @@ if MODEL() is None:
 # ==========================================
 # --- 3. Records and demo ---
 # ==========================================
+def mpl(fig):
+    st.pyplot(fig, width=STRETCH)
+    plt.close(fig)
+
+
 def status_key(a):
     return 'TEST' if a.get('likely_test') else a['Status']
 
@@ -155,7 +162,27 @@ def to_record(a, source):
             'Governing Aspect': a['Governing Mode'], 'Overall Risk (%)': a['Overall Risk (%)'], 'Status': a['Status'], 'Likely Test': bool(a.get('likely_test')),
             'S': a['S'], 'O': a['O'], 'D': a['D'], 'RPN': a['RPN'], 'RPN Level': a['RPN Level'], 'Action': a['Action'],
             'Mode Risks': a['Mode Risks'], 'FMEA': a['FMEA'], 'Findings': fg.findings(a), 'Summary': fg.summary_text(a),
-            'Source': source, 'Analyzed': datetime.now().strftime('%Y-%m-%d %H:%M')}
+            'Source': source, 'Analyzed': datetime.now().strftime('%Y-%m-%d %H:%M'), **relay_compare(a)}
+
+
+def relay_compare(a):
+    """FaultGuard against each relay's own fault record: fault type and location."""
+    reps = a.get('relay_reports') or {}
+    types, locs = {}, {}
+    for d, v in reps.items():
+        if v.get('Relay Faulted Phases'):
+            types[d] = re.sub(r'[^ABC]', '', str(v['Relay Faulted Phases']).upper()) + ('G' if re.search(r'[GN]', str(v['Relay Faulted Phases']).upper()) else '')
+        m_ = re.match(r'(-?\d+(?:\.\d+)?)\s*km', str(v.get('Relay Fault Location', '')))
+        if m_:
+            locs[d] = float(m_.group(1))
+    norm = lambda x: ''.join(sorted(set(re.sub(r'[^ABC]', '', x.upper())))) + ('G' if re.search(r'[GN]', x.upper()) else '')
+    agree = None
+    if types and a.get('fault'):
+        agree = all(norm(x) == norm(str(a.get('type', ''))) for x in types.values())
+    diffs = {d: abs(x - a['loc_km']) for d, x in locs.items()} if (locs and a.get('loc_km') is not None) else {}
+    return {'Relay Types': ', '.join(f"{d} {x}" for d, x in types.items()) or '-', 'Type Agrees': agree,
+            'Relay Locations (km)': ', '.join(f"{d} {x:g}" for d, x in locs.items()) or '-',
+            'Closest Relay Diff (km)': round(min(diffs.values()), 1) if diffs else None}
 
 
 @st.cache_data(show_spinner=False)
@@ -568,13 +595,20 @@ def show_incident(a, rec):
     k[4].metric("Breaker", f0(a.get('breaker_ms')), f"clearing {f0(a.get('clearing_ms'))}", delta_arrow='off', delta_color='off')
     ar0 = a['ar'].split(';')[0].split(' (')[0]
     k[5].metric("Auto-reclose", ar0.split(',')[0], (a['ar'].split('; ')[1] if '; ' in a['ar'] else None), delta_arrow='off', delta_color='off')
+    st.markdown("#### Fault location on the line")
+    mpl(fg.line_fig(a))
     c1, c2, c3 = st.columns([0.9, 1.1, 1])
     c1.plotly_chart(gauge(a['Overall Risk (%)'], col), width=STRETCH, key='fp_g')
     c2.plotly_chart(mode_plot(a['Mode Risks']), width=STRETCH, key='fp_m')
     c3.plotly_chart(prob_plot(a), width=STRETCH, key='fp_p')
-    st.plotly_chart(wave_plot(rec, a), width=STRETCH, key='fp_w')
-    c1, c2 = st.columns([1, 1.1])
-    c1.plotly_chart(rx_plot(a), width=STRETCH, key='fp_rx')
+    st.markdown("#### Disturbance record: currents (CT), voltages (VT) and relay contacts")
+    mpl(fg.wave_fig(rec, a))
+    with st.expander("🔎 Interactive view of the whole record (zoom and hover)"):
+        st.plotly_chart(wave_plot(rec, a), width=STRETCH, key='fp_w')
+    c1, c2 = st.columns([1, 1.05])
+    with c1:
+        st.markdown("#### Impedance seen by the relay (R-X)")
+        mpl(fg.rx_fig(a))
     with c2:
         st.markdown("#### FaultGuard AI vs the relays' own fault records")
         st.dataframe(compare_table(a), hide_index=True, width=STRETCH)
@@ -601,56 +635,7 @@ def show_incident(a, rec):
 
 
 # ==========================================
-# --- 6. AI model page ---
-# ==========================================
-def model_page():
-    b = MODEL()
-    st.markdown("<div class='pg-note'>The fault type is given by a <b>Random Forest</b> trained on simulated incidents through the same pipeline as a real "
-                "record (sequence-network faults on random 132–500 kV lines, both sources, fault resistance up to 150 Ω, weak infeed, harmonics, "
-                "CT saturation and noise). It is checked against the classic phase-selection rules. The fault location uses the Takagi method.</div>",
-                unsafe_allow_html=True)
-    k = st.columns(5)
-    k[0].metric("AI accuracy (unseen test set)", f"{b['accuracy'] * 100:.1f}%")
-    k[1].metric("Classic phase selection", f"{b['rule_accuracy'] * 100:.1f}%")
-    if b.get('acc_high_rf') is not None:
-        k[2].metric("AI, high fault resistance (>60 Ω)", f"{b['acc_high_rf'] * 100:.0f}%", f"{b['n_high_rf']} cases", delta_arrow='off', delta_color='off')
-    if b.get('acc_ct_sat') is not None:
-        k[3].metric("AI, CT saturation", f"{b['acc_ct_sat'] * 100:.0f}%", f"{b['n_ct_sat']} cases", delta_arrow='off', delta_color='off')
-    k[4].metric("Location error (median)", f"{b['loc_err_all']:.1f}% of line", f"low Rf {b['loc_err_lowrf']:.1f}%", delta_arrow='off', delta_color='off')
-    st.caption(f"Trained on {b['n_train']} simulated incidents, tested on {b['n_test']} others never seen in training.")
-    c1, c2 = st.columns([1.2, 1])
-    cm = np.array(b['confusion'])
-    pct = cm / np.maximum(cm.sum(1, keepdims=True), 1) * 100
-    fig = go.Figure(go.Heatmap(z=pct, x=b['labels'], y=b['labels'], colorscale='Blues', zmin=0, zmax=100, text=cm, texttemplate='%{text}',
-                               hovertemplate='True %{y} → AI %{x}: %{text}<extra></extra>', colorbar=dict(title='%')))
-    fig.update_layout(title='Confusion matrix (rows: true type, columns: AI type)', height=480, xaxis=dict(type='category', title='AI'),
-                      yaxis=dict(type='category', autorange='reversed', title='True'), margin=dict(l=50, r=10, t=50, b=40))
-    c1.plotly_chart(fig, width=STRETCH, key='m_cm')
-    le = b['loc_err']
-    fig = go.Figure(go.Bar(x=list(le), y=list(le.values()), marker_color=NAVY, text=[f"{v:.1f}%" for v in le.values()], textposition='outside'))
-    fig.update_layout(title='Fault location: median error by fault type (% of line)', height=480, yaxis=dict(title='% of line'),
-                      xaxis=dict(type='category'), margin=dict(l=50, r=10, t=50, b=40))
-    c2.plotly_chart(fig, width=STRETCH, key='m_le')
-    imp = getattr(b['model'], 'feature_importances_', None)
-    if imp is not None:
-        o = np.argsort(imp)[-12:]
-        fig = go.Figure(go.Bar(x=imp[o] * 100, y=[b['features'][i] for i in o], orientation='h', marker_color=BLUE))
-        fig.update_layout(title='What the AI looks at (top features, % importance)', height=380, xaxis=dict(title='%'), margin=dict(l=10, r=10, t=45, b=40))
-        st.plotly_chart(fig, width=STRETCH, key='m_imp')
-    st.markdown("""
-**How an incident is analyzed**
-1. The record is scaled to primary values and the channels are recognised (IA, IB, IC, IN, VA, VB, VC and the binary signals).
-2. The fault start is found from the step in the phase currents (superimposed current); the interruption, reclosing and any re-fault from the current envelope.
-3. One-cycle Fourier phasors before and during the fault give 23 scale-free features (current steps, sequence ratios, voltage dips) for the AI model.
-4. The location uses the Takagi method on the faulted loop with zero-sequence compensation; the apparent impedance is drawn on the R-X diagram with the zones.
-5. The relay and breaker times come from the binary channels and the event list; the event list also gives the relay's own fault location and trip time for comparison.
-6. Five aspects are scored (protection operation, breaker, severity, permanent fault, record quality) with an FMEA (RPN = S × O × D).
-7. Records that look like secondary injection tests (no line voltage, current kept flowing after the trip, unsynchronised clock) are flagged and kept out of the statistics.
-""")
-
-
-# ==========================================
-# --- 7. Statistics ---
+# --- 6. Statistics ---
 # ==========================================
 def stats_page(R):
     R = R[~R['Likely Test']].copy()
@@ -701,6 +686,20 @@ def stats_page(R):
                 if abs(d.iloc[i]['Location (km)'] - d.iloc[j]['Location (km)']) <= 3:
                     rep.append({'Line': ln, 'First': d.iloc[i]['Incident'], 'Second': d.iloc[j]['Incident'],
                                 'Locations (km)': f"{d.iloc[i]['Location (km)']:.1f} / {d.iloc[j]['Location (km)']:.1f}"})
+    st.markdown("#### FaultGuard AI against the relays (real proof, built up incident by incident)")
+    C = R[R['Relay Types'].ne('-') | R['Relay Locations (km)'].ne('-')] if 'Relay Types' in R else R.iloc[0:0]
+    if C.empty:
+        st.info("No incident with a relay fault record yet: upload the relay event lists with the disturbance records.")
+    else:
+        ag = C['Type Agrees'].dropna()
+        dd = C['Closest Relay Diff (km)'].dropna()
+        k = st.columns(3)
+        k[0].metric("Incidents compared", len(C))
+        k[1].metric("Fault type agrees with the relays", f"{ag.mean() * 100:.0f}%" if len(ag) else '-', f"{int(ag.sum())} of {len(ag)}", delta_arrow='off', delta_color='off')
+        k[2].metric("Location: median difference from the closest relay", f"{dd.median():.1f} km" if len(dd) else '-')
+        show = C[['Incident', 'Date', 'Line', 'Fault Type', 'Relay Types', 'Type Agrees', 'Location (km)', 'Relay Locations (km)', 'Closest Relay Diff (km)']].copy()
+        show['Type Agrees'] = show['Type Agrees'].map({True: '✔ yes', False: '✘ no'}).fillna('-')
+        st.dataframe(show.rename(columns={'Fault Type': 'FaultGuard Type', 'Location (km)': 'FaultGuard Location (km)'}), hide_index=True, width=STRETCH)
     st.markdown("#### Repeated faults at the same place (within 3 km)")
     if rep:
         st.warning("Faults repeating at the same tower span point to a weak spot (insulator, vegetation, conductor clearance): patrol it.")
@@ -712,8 +711,8 @@ def stats_page(R):
 # ==========================================
 # --- 8. Tabs ---
 # ==========================================
-tabs = st.tabs(["🏭 Incidents Overview", "⚡ Incident Analysis", "📄 Combined Report", "📈 Incident Statistics", "🧠 AI Model Accuracy"])
-T_OV, T_AN, T_REP, T_STAT, T_AI = tabs
+tabs = st.tabs(["🏭 Incidents Overview", "⚡ Incident Analysis", "📄 Combined Report", "📈 Incident Statistics"])
+T_OV, T_AN, T_REP, T_STAT = tabs
 
 OV_COLS = ['Incident', 'Date', 'Line', 'Fault Type', 'Location', 'Fault Current (kA)', 'Protection', 'Operate (ms)', 'Breaker (ms)', 'Clearing (ms)',
            'Auto-Reclose', 'Governing Aspect', 'Overall Risk (%)', 'Status', 'RPN', 'RPN Level', 'Source', 'Action']
@@ -782,9 +781,6 @@ with T_OV:
 
 with T_AN:
     analysis_page()
-with T_AI:
-    model_page()
-
 with T_REP:
     recs = current_records()
     if not recs:
