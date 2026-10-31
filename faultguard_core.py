@@ -925,6 +925,8 @@ def finish(out, rec, events, st):
     E_all = pd.concat(parts, ignore_index=True).sort_values('Timestamp', kind='stable').reset_index(drop=True) if parts else None
     out['relay_reports'] = reports
     out['clock_shift'] = clock
+    near = [d for d, v in reports.items() if v.get('Clock vs record (ms)') is not None and abs(v['Clock vs record (ms)']) <= 20 and not clock.get(d)]
+    out['record_device'] = near[0] if len(near) == 1 else None
     E = None
     if E_all is not None:
         E_all['Category'] = E_all['Event'].map(classify_event)
@@ -1667,6 +1669,7 @@ def analyze_incident(records, events=None, settings=None, line=None, setting=Non
     score = lambda x: (bool(x[2].get('fault')), not x[2].get('likely_test'),
                        sum(x[2]['channels'].get(k) is not None for k in ('IA', 'IB', 'IC', 'VA', 'VB', 'VC', 'IN')), len(x[1]['digital']))
     name, rec, a = max(res, key=score)
+    a['other_records'] = [(n, r_, x) for n, r_, x in res if x is not a and x.get('fault')]
     a['records'] = [record_summary(n, x) for n, _, x in res]
     a['settings_all'] = sts; a['settings_used'] = used
     a['notes'] = notes + a.get('notes', [])
@@ -1864,12 +1867,11 @@ def wave_fig(rec, a, width=10, height=None):
     ch = a['channels']
     t, t0, t1 = _window(rec, a)
     m = (t >= t0) & (t <= t1)
-    D = rec['D']
-    act = [j for j in range(D.shape[1]) if D[m, j].any() and not _re.search(r'unused|spare', rec['digital'][j], _re.I)][:16]
-    nb = len(act)
-    height = height or (6.2 + 0.28 * nb)
-    ratios = [3, 3] + ([max(1.2, 0.28 * nb)] if nb else [])
-    fig, axs = plt.subplots(len(ratios), 1, figsize=(width, height), sharex=True, gridspec_kw={'height_ratios': ratios, 'hspace': 0.12})
+    rows, srcs = binary_rows(rec, a, t0, t1)
+    nb = len(rows)
+    height = height or (6.2 + 0.3 * nb)
+    ratios = [3, 3] + ([max(1.3, 0.3 * nb)] if nb else [])
+    fig, axs = plt.subplots(len(ratios), 1, figsize=(width, height), sharex=True, gridspec_kw={'height_ratios': ratios, 'hspace': 0.14})
     axI, axV = axs[0], axs[1]
     for p in 'ABC':
         if ch.get('I' + p) is not None:
@@ -1878,25 +1880,30 @@ def wave_fig(rec, a, width=10, height=None):
             axV.plot(t[m], A[m, ch['V' + p]] / 1000, lw=1.1, color=PH_C[p], label='V' + p)
     if ch.get('IN') is not None:
         axI.plot(t[m], A[m, ch['IN']] / 1000, lw=1.0, color=PH_C['N'], ls='--', label='IN')
+    rsrc = record_source(rec, a)
     axI.set_ylabel('Current (kA)', fontsize=9); axV.set_ylabel('Voltage (kV)', fontsize=9)
-    axI.set_title('Currents (primary) - CT', loc='left', fontsize=9.5, fontweight='bold', color='#0b2e59')
-    axV.set_title('Voltages (primary) - VT', loc='left', fontsize=9.5, fontweight='bold', color='#0b2e59')
+    axI.set_title(f'Currents (primary) - CT    [record: {rsrc}]', loc='left', fontsize=9.5, fontweight='bold', color='#0b2e59')
+    axV.set_title(f'Voltages (primary) - VT    [record: {rsrc}]', loc='left', fontsize=9.5, fontweight='bold', color='#0b2e59')
     inc, intr = a.get('t_inception_ms'), a.get('t_interruption_ms')
     for ax in axs:
         ax.grid(alpha=.3, lw=0.6); ax.tick_params(labelsize=8)
         if inc is not None:
             ax.axvspan(inc, intr if intr is not None else t1, color='#d62728', alpha=0.06, lw=0)
-    marks = [('t_inception_ms', '#d62728', 'Fault'), ('t_trip_ms', '#7b2cbf', 'Trip'), ('t_interruption_ms', '#1a9e5c', 'Cleared'),
-             ('t_reclose_ms', '#0b2e59', 'Reclose'), ('t_refault_ms', '#d62728', 'Re-fault')]
+    # first trip of every source, then fault and clearing
+    trips = {}
+    for nm, src, iv in rows:
+        if _re.search(r'trip\s*(output|o/p|3\s*ph|[abc]\b)|any\s*trip|general\s*trip|^trip$', nm, _re.I) and iv:
+            trips[src] = min(trips.get(src, 1e9), min(x for x, _ in iv))
+    marks = [('Fault', '#d62728', inc)] + [(f"Trip {sname}", c_, v) for (sname, v), c_ in zip(sorted(trips.items(), key=lambda kv: kv[1]), ['#7b2cbf', '#c2185b', '#5e35b1', '#ad1457'])] + \
+            [('Cleared', '#1a9e5c', intr), ('Reclose', '#0b2e59', a.get('t_reclose_ms')), ('Re-fault', '#d62728', a.get('t_refault_ms'))]
     yl = axI.get_ylim()
-    for i, (key, col, lab) in enumerate(marks):
-        v = a.get(key)
+    for i_, (lab, col, v) in enumerate(marks):
         if v is None or not (t0 <= v <= t1):
             continue
         for ax in axs:
             ax.axvline(v, color=col, ls='--', lw=1.2, zorder=4)
-        rel = f" +{v - inc:.0f} ms" if (inc is not None and key != 't_inception_ms') else ''
-        axI.text(v, yl[1] - (yl[1] - yl[0]) * (0.02 + 0.11 * (i % 3)), f" {lab}{rel}", color='white', fontsize=7.8, fontweight='bold', va='top', ha='left',
+        rel = f" +{v - inc:.0f} ms" if (inc is not None and lab != 'Fault') else ''
+        axI.text(v, yl[1] - (yl[1] - yl[0]) * (0.02 + 0.11 * (i_ % 4)), f" {lab}{rel}", color='white', fontsize=7.8, fontweight='bold', va='top', ha='left',
                  bbox=dict(boxstyle='round,pad=0.2', fc=col, ec='none'), zorder=6)
     axI.legend(fontsize=8, ncol=4, loc='lower right', frameon=True, framealpha=0.9)
     axV.legend(fontsize=8, ncol=3, loc='lower right', frameon=True, framealpha=0.9)
@@ -1905,16 +1912,21 @@ def wave_fig(rec, a, width=10, height=None):
                  fontsize=8, color='#333', bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='#ccc'))
     if nb:
         axB = axs[2]
-        axB.set_title('Binary signals - relay contacts', loc='left', fontsize=9.5, fontweight='bold', color='#0b2e59')
-        for k_, j in enumerate(act):
-            nm = rec['digital'][j].strip()
+        axB.set_title('Binary signals - ' + ';  '.join(srcs), loc='left', fontsize=9.2, fontweight='bold', color='#0b2e59')
+        src_col = {}
+        palette = ['#0b2e59', '#8e24aa', '#00796b', '#bf360c']
+        for k_, (nm, src, iv) in enumerate(rows):
             col = '#d62728' if _re.search(r'trip', nm, _re.I) else '#e3a400' if _re.search(r'start|pick', nm, _re.I) else \
-                '#1f5fbf' if _re.search(r'aid|send|rec|carrier|pott|dcb', nm, _re.I) else '#1a9e5c' if _re.search(r'cb|52|close|open', nm, _re.I) else '#777'
-            x = D[m, j]; tt = t[m]
-            on = np.flatnonzero(np.diff(np.r_[0, x, 0]))
-            for s_, e_ in zip(on[::2], on[1::2]):
-                axB.broken_barh([(tt[s_], tt[min(e_, len(tt) - 1)] - tt[s_])], (nb - 1 - k_ - 0.32, 0.64), fc=col, ec='none')
-        axB.set_yticks(range(nb)); axB.set_yticklabels([rec['digital'][j].strip()[:22] for j in act][::-1], fontsize=7.5)
+                '#1f5fbf' if _re.search(r'aid|send|rec|carrier|pott|dcb', nm, _re.I) else '#1a9e5c' if _re.search(r'cb|52|close|open|pole', nm, _re.I) else '#777'
+            for x0_, x1_ in iv:
+                axB.broken_barh([(x0_, max(x1_ - x0_, 0.8))], (nb - 1 - k_ - 0.32, 0.64), fc=col, ec='none', alpha=0.95 if src == rows[0][1] else 0.75,
+                                hatch=None if src == rows[0][1] else '////')
+            src_col.setdefault(src, palette[len(src_col) % len(palette)])
+        axB.set_yticks(range(nb))
+        labs = [f"{nm[:20]}  [{src}]" for nm, src, _ in rows][::-1]
+        axB.set_yticklabels(labs, fontsize=7.3)
+        for tl, (nm, src, _) in zip(axB.get_yticklabels(), rows[::-1]):
+            tl.set_color(src_col[src])
         axB.set_ylim(-0.6, nb - 0.4); axB.grid(axis='y', alpha=0)
     axs[-1].set_xlabel('Time (ms from record start)', fontsize=9)
     axs[-1].set_xlim(t0, t1)
@@ -2010,3 +2022,63 @@ def name_equipment(a, typ=None, name=None, end_a=None, end_b=None):
     m.update({'Equipment Type': typ, 'Equipment': name, 'End A': end_a, 'End B': end_b if typ in ('Line', 'Cable') else '',
               'Line': _re.sub(r'\s{2,}', ' ', title), 'Station': end_a if typ not in ('Line', 'Cable') else f"{end_a} / {end_b}"})
     return m['Line']
+
+
+def record_source(rec, a):
+    """Name of the relay that made a disturbance record (matched through its event list), else the record station/device."""
+    dev = a.get('record_device')
+    st_ = _re.sub(r'\s{2,}', ' ', _re.sub(r'\b(\d+\s*kv|s/?s|substation|sub)\b', '', (rec.get('station') or ''), flags=_re.I)).strip(' -').title()
+    return f"{dev} ({st_})" if dev and st_ else (dev or st_ or 'record')
+
+
+def binary_rows(rec, a, t0, t1, max_rows=22):
+    """Binary signals around the fault from every source: the main record's channels, the other records (aligned on the
+    fault inception) and the event lists of relays without a record. Returns ([(name, source, [(start, end) ms])], legend)."""
+    rows, legend = [], []
+    def from_record(r_, a_, shift, tag):
+        tt = (r_['t'] - r_['t'][0]) * 1000 + shift
+        D = r_['D']; m = (tt >= t0) & (tt <= t1); n_ = 0
+        for j in range(D.shape[1]):
+            nm = r_['digital'][j].strip()
+            if _re.search(r'unused|spare|not used', nm, _re.I) or not D[m, j].any():
+                continue
+            x = D[m, j]; tm = tt[m]
+            on = np.flatnonzero(np.diff(np.r_[0, x, 0]))
+            iv = [(tm[s_], tm[min(e_, len(tm) - 1)]) for s_, e_ in zip(on[::2], on[1::2])]
+            rows.append((nm, tag, iv)); n_ += 1
+        legend.append(f"{tag}: {n_} of {D.shape[1]} record channels changed")
+    main_tag = a.get('record_device') or (rec.get('station') or 'record').strip().title()
+    from_record(rec, a, 0.0, main_tag)
+    have = {main_tag}
+    for n_, r2, a2 in a.get('other_records') or []:
+        if a2.get('t_inception_ms') is None or a.get('t_inception_ms') is None:
+            continue
+        tag = a2.get('record_device') or (r2.get('station') or n_).strip().title()
+        if tag in have:
+            tag = f"{tag} ({n_})"
+        from_record(r2, a2, a['t_inception_ms'] - a2['t_inception_ms'], tag); have.add(tag)
+    E = a.get('events'); t0r = a.get('record_start')
+    if E is not None and t0r is not None and len(E):
+        key = _re.compile(r'trip|start|diff|aid|intertrip|send|receiv|pole|cb\b|breaker|close|open|sotf|zone', _re.I)
+        for dev, Ed in E.groupby('Device'):
+            if dev in have or (a.get('record_device') and dev == a.get('record_device')):
+                continue
+            state, n_ = {}, 0
+            for _, r in Ed.sort_values('Timestamp').iterrows():
+                ev = str(r['Event']).strip()
+                mm = _re.match(r'(.+?)\s+(ON|OFF)$', ev, _re.I)
+                if not mm or not key.search(mm.group(1)) or _re.search(r'virtual|output contacts|logic inputs', mm.group(1), _re.I):
+                    continue
+                nm, on_ = mm.group(1).strip(), mm.group(2).upper() == 'ON'
+                tms = (pd.Timestamp(r['Timestamp']) - pd.Timestamp(t0r)).total_seconds() * 1000
+                if on_:
+                    state.setdefault(nm, []).append([tms, None])
+                elif nm in state and state[nm] and state[nm][-1][1] is None:
+                    state[nm][-1][1] = tms
+            for nm, ivs in state.items():
+                iv = [(x0_, x1_ if x1_ is not None else t1) for x0_, x1_ in ivs if x0_ <= t1 and (x1_ or t1) >= t0]
+                if iv:
+                    rows.append((nm, dev, iv)); n_ += 1
+            if n_:
+                legend.append(f"{dev}: {n_} signals from its event list (aligned)")
+    return rows[:max_rows], legend
