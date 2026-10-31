@@ -2119,12 +2119,14 @@ def binary_rows(rec, a, t0, t1, max_rows=22, own_only=False):
 
 def risk_title(a, lab):
     """Banner title that says where the incident risk comes from (the FMEA failure modes)."""
-    return f"{lab} - incident risk {a['Overall Risk (%)']:.0f}% (from the FMEA failure modes; highest: {a['Governing Mode']})"
+    if a.get('Overall Risk (%)', 0) <= 0:
+        return f"{lab} - incident risk 0% - no issue found"
+    return f"{lab} - incident risk {a['Overall Risk (%)']:.0f}% - main reason: {a['Governing Mode']} ({main_reason(a)})"
 
 
 def risk_note(a):
     others = a.get('Other Modes Above Normal', 0)
-    return (f"Incident risk = the highest of the five failure-mode risks in the FMEA table ({a['Governing Mode']} {a['Mode Risks'][a['Governing Mode']]:.0f}%)"
+    return (f"Main reason: {main_reason(a)}. Incident risk = the highest of the five failure-mode risks in the FMEA table ({a['Governing Mode']} {a['Mode Risks'][a['Governing Mode']]:.0f}%)"
             + (f" + 5 points for each of the {others} other mode(s) above 35%" if others else '') + '. Normal up to 35%, watch 35-70%, action above 70%.')
 
 
@@ -2266,3 +2268,54 @@ FMEA_SCALES = [
     ('Fault type', 'Single-phase to ground: auto-reclose checked only if in service. Phase-phase and double-phase to ground: no reclose expected. '
                    'Three-phase: fault severity at least 40%. All types: same protection, breaker and record checks'),
 ]
+
+
+# ---------------------------------------------------------------- the main reason behind the incident risk
+_REASON_RULES = [
+    ('likely a secondary injection test', 'likely a test record, not a system fault'),
+    ('FAILED TO OPERATE', 'zone 1 failed to operate'),
+    ('OVER-REACH', 'zone 1 over-reach (fault outside the line)'),
+    ('outside every zone set', 'distance trip outside the set zones'),
+    ('Faster than the zone', 'trip faster than its time setting'),
+    ('Slower than the setting allows', 'zone trip slower than its time setting'),
+    ('Slower than the', 'slow instantaneous trip'),
+    ('possible under-reach', 'possible zone 1 under-reach'),
+    ('remote backup', 'fault cleared by a backup zone'),
+    ('clearing is slow', 'fault cleared by zone 2 (time-delayed)'),
+    ('No trip found', 'no trip found in the files'),
+    ('not interrupted within the record', 'fault current not interrupted'),
+    ('SLOW).', 'slow breaker'),
+    ('breaker rating', 'fault current close to the breaker rating'),
+    ('Unsuccessful', 'unsuccessful auto-reclose (permanent fault)'),
+    ('No reclosing seen', 'no reclose for a single-phase fault'),
+    ('Auto-reclose was initiated', 'auto-reclose initiated but no reclose'),
+    ('not time-synchronised', 'relay clocks not time-synchronised'),
+    ('Relay clock not synchronised', 'relay clock not set (record date wrong)'),
+    ('Channels not found', 'record channels missing'),
+    ('Measured neutral differs', 'neutral current does not match the phases (CT circuit)'),
+    ('confidence only', 'low fault-type confidence'),
+    ('Three-phase fault', 'three-phase fault'),
+    ('backup clearing', 'long clearing by a backup element'),
+    ('Total clearing time', 'long clearing time'),
+    ('Lowest phase voltage', 'deep voltage dip'),
+]
+
+
+def main_reason(a):
+    """Short cause of the incident risk: the finding that set the highest failure-mode risk."""
+    if a.get('likely_test'):
+        return 'likely a test record, not a system fault'
+    gov = a.get('Governing Mode')
+    if not gov or a.get('Overall Risk (%)', 0) <= 0:
+        return 'no issue found'
+    txt = ' '.join(a.get('Reasons', {}).get(gov, []))
+    low = txt.lower()
+    for key, lab in _REASON_RULES:
+        if key.lower() in low:
+            if lab == 'slow breaker' and a.get('breaker_ms') is not None:
+                return f"slow breaker ({a['breaker_ms']:.0f} ms)"
+            if lab == 'long clearing time' and a.get('clearing_ms') is not None:
+                return f"long clearing time ({a['clearing_ms']:.0f} ms)"
+            return lab
+    first = (a.get('Reasons', {}).get(gov) or [''])[0]
+    return first[:80].rstrip('.') or gov.lower()
