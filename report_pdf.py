@@ -178,6 +178,11 @@ def incident_pdf(a, rec):
     for r in fg.findings(a):
         S.append(P(f"- {r}"))
     S.append(Paragraph(f"<b>Action:</b> {clean(a['Action'])}", BODY))
+    if (a.get('engineer_comments') or '').strip():
+        S.append(P("Engineer's comments", H2))
+        for ln in a['engineer_comments'].strip().splitlines():
+            if ln.strip():
+                S.append(P(ln.strip()))
     S.append(P('FMEA', H2))
     S.append(table([['Aspect', 'Risk %', 'S', 'O', 'D', 'RPN', 'Level']] + [[m['Failure Mode'], f"{m['Risk (%)']:.0f}", m['S'], m['O'], m['D'], m['RPN'], m['RPN Level']] for m in a['FMEA']],
                    [W * 0.34, W * 0.12, W * 0.08, W * 0.08, W * 0.08, W * 0.12, W * 0.18]))
@@ -206,10 +211,10 @@ def combined_pdf(R, summary, source, n_a, n_w):
     S = [P('Incident Summary Report', H1), P(f"{len(R)} incidents  -  source: {source}", SMALL), Spacer(1, 4)]
     st = 'ACTION' if n_a else 'WATCH' if n_w else 'EXCELLENT'
     S.append(banner(f"{n_a} action  -  {n_w} watch  -  {len(R) - n_a - n_w} normal", summary, st))
-    rows = [['Incident', 'Date', 'Line', 'Type', 'Location', 'Clearing', 'Reclose', 'Governing aspect', 'Risk', 'Status']]
+    rows = [['Incident', 'Date', 'Line', 'Type', 'Location', 'Clearing', 'Reclose', 'Highest-risk mode', 'Risk', 'Status']]
     for _, r in R.iterrows():
         rows.append([r['Incident'], str(r['Date'])[:16], r['Line'], r['Fault Type'], r['Location'], r['Clearing (ms)'], str(r['Auto-Reclose'])[:22],
-                     r['Governing Aspect'], f"{r['Overall Risk (%)']:.0f}", r['Status']])
+                     r['Highest-Risk Mode'], f"{r['Overall Risk (%)']:.0f}", r['Status']])
     t = table(rows, [W * x for x in [0.08, 0.12, 0.14, 0.06, 0.1, 0.07, 0.13, 0.15, 0.06, 0.09]])
     for i, (_, r) in enumerate(R.iterrows(), 1):
         t.setStyle(TableStyle([('TEXTCOLOR', (9, i), (9, i), SCOL[r['Status']])]))
@@ -218,7 +223,7 @@ def combined_pdf(R, summary, source, n_a, n_w):
     if len(above):
         S.append(P('Incidents needing attention', H2))
         for _, r in above.iterrows():
-            block = [Paragraph(f"<b>{clean(r['Incident'])}</b>  -  {clean(r['Line'])}  -  {clean(r['Governing Aspect'])}  -  {r['Overall Risk (%)']:.0f}% {r['Status']}", BODY),
+            block = [Paragraph(f"<b>{clean(r['Incident'])}</b>  -  {clean(r['Line'])}  -  {clean(r['Highest-Risk Mode'])}  -  {r['Overall Risk (%)']:.0f}% {r['Status']}", BODY),
                      P(r['Summary'])] + [P(f"- {f}") for f in r['Findings']]
             block += [P(f"Action: {r['Action']}", SMALL), Spacer(1, 5)]
             S.append(KeepTogether(block))

@@ -159,7 +159,7 @@ def to_record(a, source):
             'Fault Current (kA)': f1(a.get('I_fault_max_kA')), 'Lowest Voltage (%)': round(a['V_min_pu'] * 100) if a.get('V_min_pu') is not None else None,
             'Protection': ', '.join(e[1] for e in a.get('elements', [])) or '-', 'Operate (ms)': f1(a.get('operate_ms')),
             'Breaker (ms)': f1(a.get('breaker_ms')), 'Clearing (ms)': f1(a.get('clearing_ms')), 'Auto-Reclose': a.get('ar', '-'),
-            'Governing Aspect': a['Governing Mode'], 'Overall Risk (%)': a['Overall Risk (%)'], 'Status': a['Status'], 'Likely Test': bool(a.get('likely_test')),
+            'Highest-Risk Mode': a['Governing Mode'], 'Overall Risk (%)': a['Overall Risk (%)'], 'Status': a['Status'], 'Likely Test': bool(a.get('likely_test')),
             'S': a['S'], 'O': a['O'], 'D': a['D'], 'RPN': a['RPN'], 'RPN Level': a['RPN Level'], 'Action': a['Action'],
             'Mode Risks': a['Mode Risks'], 'FMEA': a['FMEA'], 'Findings': fg.findings(a), 'Summary': fg.summary_text(a),
             'Source': source, 'Analyzed': datetime.now().strftime('%Y-%m-%d %H:%M'), **relay_compare(a)}
@@ -580,11 +580,33 @@ def show_incident(a, rec):
     m = a.get('meta', {})
     st.markdown(f"### 🔌 Trip Report: {m.get('Line', '')}")
     st.caption(f"Incident {m.get('Incident', '')} · {m.get('Date', '')} · stations: {m.get('Station', '')} · relays: {m.get('Relay', '')}")
-    if a.get('likely_test'):
-        banner(STATUS_LABEL['TEST'], fg.summary_text(a), col)
-    else:
-        banner(fg.risk_title(a, STATUS_LABEL[sk]), fg.summary_text(a), col)
-        st.caption(fg.risk_note(a))
+    ph_banner = st.empty()
+    if a.get('fault'):
+        with st.expander("✏️ Review before the report: edit the summary, the elements that cleared the fault and add comments", expanded=True):
+            iid = re.sub(r'\W+', '_', str(m.get('Incident', 'x')))
+            elems = [e[1] for e in a.get('elements', [])]
+            prev = a.get('elements_cleared')
+            cl = st.multiselect("Elements that cleared the fault (untick an element that operated but did not clear it, e.g. a stub "
+                                "protection that only works with the line disconnector open)", elems,
+                                default=[e for e in (prev if prev is not None else elems) if e in elems], key=f"cl_{iid}")
+            a['elements_cleared'] = cl
+            auto = fg.summary_auto(a)
+            txt = st.text_area("Incident summary (edit freely; this text goes into the report)", value=auto, height=120,
+                               key=f"sum_{iid}_{abs(hash(tuple(cl))) % 10 ** 8}")
+            a['summary_edit'] = txt if txt.strip() and txt.strip() != auto.strip() else None
+            a['engineer_comments'] = st.text_area("Engineer's comments (optional, added to the report)", value=a.get('engineer_comments') or '',
+                                                  height=90, key=f"com_{iid}")
+            st.caption("Changes apply at once to this page, the PDF report, the overview and the combined report.")
+        for r_ in st.session_state['register']:
+            if r_['Incident'] == m.get('Incident'):
+                r_['Summary'] = fg.summary_text(a)
+                r_['Protection'] = ', '.join(cl) or '-'
+    with ph_banner.container():
+        if a.get('likely_test'):
+            banner(STATUS_LABEL['TEST'], fg.summary_text(a), col)
+        else:
+            banner(fg.risk_title(a, STATUS_LABEL[sk]), fg.summary_text(a), col)
+            st.caption(fg.risk_note(a))
     st.caption(f"Record: {rec['format']}, {len(rec['analog'])} analog / {len(rec['digital'])} binary channels, "
                f"{(rec['t'][-1] - rec['t'][0]) * 1000:.0f} ms, {1 / np.median(np.diff(rec['t'])):.0f} samples/s"
                + (f" · event list: {len(a['events'])} events" if a.get('events') is not None else " · no event list"))
@@ -677,7 +699,7 @@ def stats_page(R):
     k[2].metric("Auto-reclose success", f"{(ar['Auto-Reclose'].str.startswith('Successful').mean() * 100):.0f}%" if len(ar) else '-', f"{len(ar)} attempts",
                 delta_arrow='off', delta_color='off')
     k[3].metric("Median clearing", f"{R['Clearing (ms)'].median():.0f} ms" if R['Clearing (ms)'].notna().any() else '-')
-    k[4].metric("Mal-operations / slow breakers", int(((R['Governing Aspect'].isin(['Protection operation', 'Breaker performance'])) & (R['Status'] == 'ACTION')).sum()))
+    k[4].metric("Mal-operations / slow breakers", int(((R['Highest-Risk Mode'].isin(['Protection operation', 'Breaker performance'])) & (R['Status'] == 'ACTION')).sum()))
     c1, c2 = st.columns(2)
     g = R.groupby(['Line', 'Status']).size().unstack(fill_value=0)
     fig = go.Figure()
@@ -741,7 +763,7 @@ tabs = st.tabs(["🏭 Incidents Overview", "⚡ Incident Analysis", "📄 Combin
 T_OV, T_AN, T_REP, T_STAT, T_FMEA = tabs
 
 OV_COLS = ['Incident', 'Date', 'Line', 'Fault Type', 'Location', 'Fault Current (kA)', 'Protection', 'Operate (ms)', 'Breaker (ms)', 'Clearing (ms)',
-           'Auto-Reclose', 'Governing Aspect', 'Overall Risk (%)', 'Status', 'RPN', 'RPN Level', 'Source', 'Action']
+           'Auto-Reclose', 'Highest-Risk Mode', 'Overall Risk (%)', 'Status', 'RPN', 'RPN Level', 'Source', 'Action']
 
 with T_OV:
     st.radio("Show", [SRC_PAGES, SRC_DEMO], horizontal=True, key='ov_src')
@@ -769,9 +791,9 @@ with T_OV:
         if len(Rs):
             w = Rs.iloc[0]
             perm = Rs[Rs['Auto-Reclose'].str.startswith('Unsuccessful')]
-            slow = Rs[Rs['Governing Aspect'] == 'Breaker performance']
+            slow = Rs[Rs['Highest-Risk Mode'] == 'Breaker performance']
             cl = Rs['Clearing (ms)'].dropna()
-            cards = [("Highest risk", f"{w['Overall Risk (%)']:.0f}%", STATUS_COLOR[w['Status']], f"{w['Incident']} · {w['Governing Aspect']}"),
+            cards = [("Highest risk", f"{w['Overall Risk (%)']:.0f}%", STATUS_COLOR[w['Status']], f"{w['Incident']} · {w['Highest-Risk Mode']}"),
                      ("Permanent faults", f"{len(perm)}", RED if len(perm) else GREEN, ', '.join(perm['Line'].head(3)) or 'none'),
                      ("Slowest clearing", f"{cl.max():.0f} ms" if len(cl) else '-', AMBER if len(cl) and cl.max() > 120 else GREEN,
                       Rs.loc[cl.idxmax(), 'Incident'] if len(cl) else ''),
@@ -785,7 +807,7 @@ with T_OV:
         t = R.iloc[::-1]
         colors = [STATUS_COLOR['TEST'] if x else STATUS_COLOR[s] for x, s in zip(t['Likely Test'], t['Status'])]
         fig = go.Figure(go.Bar(x=t['Overall Risk (%)'], y=t['Incident'] + ' · ' + t['Line'], orientation='h', marker_color=colors,
-                               text=[('Test record' if x else f"{r:.0f}% · {g}") for x, r, g in zip(t['Likely Test'], t['Overall Risk (%)'], t['Governing Aspect'])],
+                               text=[('Test record' if x else f"{r:.0f}% · {g}") for x, r, g in zip(t['Likely Test'], t['Overall Risk (%)'], t['Highest-Risk Mode'])],
                                textposition='outside', cliponaxis=False))
         for x, tx in [(35, 'Watch'), (70, 'Action')]:
             fig.add_vline(x=x, line_dash='dash', line_color='#888', annotation_text=tx, annotation_position='top')
@@ -823,7 +845,7 @@ with T_REP:
         if n_a:
             top = Rs.iloc[0]
             summary_txt = (f"{n_a} incident(s) need action and {n_w} need review. Highest: {top['Incident']} on {top['Line']} "
-                           f"({top['Governing Aspect']}, {top['Overall Risk (%)']:.0f}%).")
+                           f"({top['Highest-Risk Mode']}, {top['Overall Risk (%)']:.0f}%).")
         elif n_w:
             summary_txt = f"No incident needs immediate action; {n_w} need review."
         else:
@@ -833,14 +855,14 @@ with T_REP:
         st.markdown(f"**Executive summary:** {summary_txt}")
         k = st.columns(4)
         k[0].metric("Records", len(R)); k[1].metric("🔴 Action", n_a); k[2].metric("🟠 Watch", n_w); k[3].metric("🟢 Normal", len(Rs) - n_a - n_w)
-        cols = ['Incident', 'Date', 'Line', 'Fault Type', 'Location', 'Clearing (ms)', 'Auto-Reclose', 'Governing Aspect', 'Overall Risk (%)', 'Status', 'RPN', 'Action']
+        cols = ['Incident', 'Date', 'Line', 'Fault Type', 'Location', 'Clearing (ms)', 'Auto-Reclose', 'Highest-Risk Mode', 'Overall Risk (%)', 'Status', 'RPN', 'Action']
         st.dataframe(R[cols], hide_index=True, width=STRETCH)
         st.markdown("#### Incidents needing attention")
         above = Rs[Rs['Status'] != 'EXCELLENT']
         if above.empty:
             st.success("No incident above the normal band.")
         for i, (_, r) in enumerate(above.iterrows()):
-            with st.expander(f"{r['Incident']}  ·  {r['Line']}  ·  {r['Governing Aspect']}  ·  {r['Overall Risk (%)']:.0f}% {r['Status']}", expanded=i < 3):
+            with st.expander(f"{r['Incident']}  ·  {r['Line']}  ·  {r['Highest-Risk Mode']}  ·  {r['Overall Risk (%)']:.0f}% {r['Status']}", expanded=i < 3):
                 e1, e2 = st.columns([1, 1.1])
                 with e1:
                     st.markdown(f"_{r['Summary']}_")
@@ -855,7 +877,7 @@ with T_REP:
         for _, r in R.iterrows():
             lines += ["-----------------------------------------", f"{r['Incident']} - {r['Line']} - {r['Date']} - "
                       + ('TEST RECORD' if r['Likely Test'] else f"{r['Status']} - risk {r['Overall Risk (%)']:.0f}%"), r['Summary'],
-                      f"Governing aspect: {r['Governing Aspect']}  |  RPN = {r['S']} x {r['O']} x {r['D']} = {r['RPN']} ({r['RPN Level']})"] + \
+                      f"Highest-risk mode: {r['Highest-Risk Mode']}  |  RPN = {r['S']} x {r['O']} x {r['D']} = {r['RPN']} ({r['RPN Level']})"] + \
                      [f"* {t}" for t in r['Findings']] + [f"Action: {r['Action']}"]
         lines += ["=========================================", "Generated by FaultGuard AI Engine"]
         fm = pd.DataFrame([dict(**{'Incident': r['Incident']}, **m) for _, r in R.iterrows() for m in r['FMEA']])
@@ -884,7 +906,7 @@ with T_FMEA:
     _a = _last[0] if _last else None
     if _a is not None:
         st.markdown(f"**Incident:** {_a['meta'].get('Line', '')} · {_a['meta'].get('Incident', '')} · incident risk {_a['Overall Risk (%)']:.0f}% "
-                    f"(governing: {_a['Governing Mode']})")
+                    f"(highest-risk mode: {_a['Governing Mode']})")
     st.markdown("#### Failure modes")
     st.dataframe(fg.fmea_reference(_a), hide_index=True, width=STRETCH,
                  column_config={'Risk (%) criteria': st.column_config.TextColumn(width='large'), 'Definition': st.column_config.TextColumn(width='medium')})
