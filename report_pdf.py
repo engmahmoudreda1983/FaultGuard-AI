@@ -20,6 +20,7 @@ W = A4[0] - 30 * mm
 _ss = getSampleStyleSheet()
 H1 = ParagraphStyle('h1', parent=_ss['Heading1'], fontName='Helvetica-Bold', fontSize=17, textColor=NAVY, spaceAfter=4)
 H2 = ParagraphStyle('h2', parent=_ss['Heading2'], fontName='Helvetica-Bold', fontSize=12, textColor=NAVY, spaceBefore=8, spaceAfter=4)
+H3 = ParagraphStyle('h3', parent=_ss['Heading3'], fontName='Helvetica-Bold', fontSize=10, textColor=NAVY, spaceBefore=6, spaceAfter=3)
 BODY = ParagraphStyle('b', parent=_ss['BodyText'], fontName='Helvetica', fontSize=9.2, leading=12.5)
 SMALL = ParagraphStyle('s', parent=BODY, fontSize=7.8, leading=10, textColor=MUTED)
 CELL = ParagraphStyle('c', parent=BODY, fontSize=8, leading=10)
@@ -126,25 +127,35 @@ def incident_pdf(a, rec):
         if tl is not None:
             S.append(fig_image(tl))
         S.append(PageBreak())
-        S.append(P('Fault analysis: FaultGuard AI against the relays', H2))
-        C = fg.compare_table(a)
-        cols = list(C.columns)
-        wq = 0.17; wr = (1 - wq) / (len(cols) - 1)
-        S.append(table([cols] + C.astype(str).values.tolist(), [W * wq] + [W * wr] * (len(cols) - 1)))
-        ends = a.get('ends')
-        if ends is not None and len(ends) > 1:
-            S.append(P('Both line ends', H2))
-            T_ = ends.set_index('Line end').T.reset_index().rename(columns={'index': 'Item'})
-            T_ = T_.astype(str).replace({'nan': '-', 'None': '-'})
-            S.append(table([list(T_.columns)] + T_.values.tolist(), [W * 0.4] + [W * 0.6 / (len(T_.columns) - 1)] * (len(T_.columns) - 1)))
-            dif = [c for c in ends.columns if c.startswith('Differential')]
-            if dif:
-                S.append(P('The line differential relays at both ends measured the same total fault current (local + remote): the fault was inside '
-                           'the protected line.', SMALL))
+        TS = fg.source_tables(a)
+        if TS:
+            S.append(P('Results by source', H2))
+            S.append(P('Each source is shown on its own: FaultGuard AI from the disturbance records, and each relay from its own fault record. '
+                       'Every location is also given from the same line end so that they can be compared.', SMALL))
+            for k_, T_ in TS.items():
+                if k_ == 'summary':
+                    continue
+                cols = list(T_.columns)
+                S.append(KeepTogether([P(k_ + (' (disturbance records)' if k_ == 'FaultGuard AI' else ' (relay fault records)'), H3),
+                                       table([cols] + T_.astype(str).values.tolist(), [W * 0.4] + [W * 0.6 / (len(cols) - 1)] * (len(cols) - 1))]))
+            T_ = TS['summary']; cols = list(T_.columns)
+            S.append(KeepTogether([P('Summary: average and spread of the sources', H3),
+                                   table([cols] + T_.astype(str).values.tolist(), [W * 0.27] + [W * 0.11] * (len(cols) - 2) + [W * (0.73 - 0.11 * (len(cols) - 2))])]))
+            S.append(P('Relay locations in the summary are the average of the two ends of the same relay type. Times are counted differently: the relay counts '
+                       'its trip time from its own start and its breaker time from the trip command to pole dead; FaultGuard counts from the fault inception '
+                       'in the record and the breaker time from the trip to current zero. Spread = half the difference between the highest and lowest value.', SMALL))
+        else:
+            S.append(P('Fault analysis: FaultGuard AI against the relays', H2))
+            C = fg.compare_table(a)
+            cols = list(C.columns)
+            wq = 0.17; wr = (1 - wq) / (len(cols) - 1)
+            S.append(table([cols] + C.astype(str).values.tolist(), [W * wq] + [W * wr] * (len(cols) - 1)))
         if a.get('restored'):
             rs = a['restored']
             S.append(P(f"Line re-energised at {pd.Timestamp(rs['time']):%Y-%m-%d %H:%M:%S}, {fg.fmt_dur(rs['after_s'])} after the fault ({rs['device']}: {rs['event']}).", SMALL))
         for n in a.get('notes', []):
+            if TS and n.startswith('Single-ended locations'):
+                continue
             S.append(P(n, SMALL))
         for k_, (r_, a_) in enumerate([(rec, a)] + [(r2, a2) for _, r2, a2 in (a.get('other_records') or [])]):
             S.append(PageBreak())

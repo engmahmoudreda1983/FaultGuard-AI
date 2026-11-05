@@ -1704,6 +1704,91 @@ def record_summary(name, a):
             'Status': ('TEST' if a.get('likely_test') else a.get('Status'))}
 
 
+def _num(v, unit_ms=False):
+    """Number from a relay value such as '35.73 km', '0.000 s', '44.00ms' (times in ms when unit_ms)."""
+    m = re.match(r'\s*(-?\d+(?:\.\d+)?)\s*(km|%|ms|s)?', str(v or ''))
+    if not m:
+        return None
+    x = float(m.group(1))
+    if unit_ms and m.group(2) == 's':
+        x *= 1000
+    return x
+
+
+def source_tables(a):
+    """The incident by source, without mixing them: FaultGuard AI (from the disturbance records) and each relay type (from its own fault
+    records), every value per line end and every location from the same end, then a summary with the average and the spread."""
+    L = a['line']['length_km']
+    ends = a.get('end_list') or []
+    if len(ends) < 2:
+        return None
+    ref = ends[0]
+    from_ref = lambda st, x: None if x is None else (x if st == ref else L - x)
+    r1 = lambda v: '-' if v is None else f"{v:.1f}"
+    r2 = lambda v: '-' if v is None else f"{v:.2f}"
+    T = {}
+    # FaultGuard AI
+    fg_ = {e['station']: e for e in a.get('end_records') or []}
+    rows = [['Fault type'] + [fg_.get(st, {}).get('type', '-') for st in ends],
+            [f'Fault location, from this end (km)'] + [r1(fg_.get(st, {}).get('loc')) for st in ends],
+            [f'Fault location, from {ref} (km)'] + [r1(from_ref(st, fg_.get(st, {}).get('loc'))) for st in ends]]
+    if a.get('loc_method') == 'two-ended':
+        rows.append([f'Fault location from both ends, from {ref} (km)'] + [r1(a['loc_km'])] * len(ends))
+    rows += [['Fault current (kA)'] + [r2(fg_.get(st, {}).get('i')) for st in ends],
+            ['Trip after fault start (ms)'] + [r1(fg_.get(st, {}).get('trip')) for st in ends],
+            ['Breaker, trip to current zero (ms)'] + [r1(fg_.get(st, {}).get('cb')) for st in ends],
+            ['Fault duration (ms)'] + [r1(fg_.get(st, {}).get('clr')) for st in ends]]
+    T['FaultGuard AI'] = pd.DataFrame(rows, columns=['Quantity'] + ends)
+    # each relay type
+    reps = a.get('relay_reports') or {}
+    types = sorted({d.split(' ')[0] for d in reps if ' ' in d})
+    rel = {}
+    for ty in types:
+        v = {st: reps.get(f'{ty} {st}', {}) for st in ends}
+        ib = {st: max([x for x in (v[st].get(f'Relay I{p} Fault') for p in 'ABC') if x is not None], default=None) for st in ends}
+        loc = {st: _num(v[st].get('Relay Fault Location')) for st in ends}
+        rel[ty] = {'type': {st: v[st].get('Relay Faulted Phases') for st in ends}, 'loc': {st: from_ref(st, loc[st]) for st in ends},
+                   'i': {st: None if ib[st] is None else ib[st] / 1000 for st in ends}, 'dur': {st: _num(v[st].get('Relay Fault Duration'), True) for st in ends}}
+        rows = [['Fault type'] + [v[st].get('Relay Faulted Phases', '-') for st in ends],
+                ['Fault location, from this end (km)'] + [r1(loc[st]) for st in ends],
+                [f'Fault location, from {ref} (km)'] + [r1(from_ref(st, loc[st])) for st in ends],
+                ['Fault current (kA)'] + [r2(rel[ty]['i'][st]) for st in ends],
+                ['Relay trip time (ms)'] + [r1(_num(v[st].get('Relay Trip Time'), True)) for st in ends],
+                ['Breaker operate time (ms)'] + [r1(_num(v[st].get('Relay CB Time'), True)) for st in ends],
+                ['Fault duration (ms)'] + [r1(rel[ty]['dur'][st]) for st in ends],
+                ['Tripping elements'] + [v[st].get('Relay Trip Elements', '-') for st in ends]]
+        dif = [(v[st].get('Relay IB Differential') or max([v[st].get(f'Relay I{p} Differential') or 0 for p in 'ABC'])) for st in ends]
+        if any(dif):
+            rows.append(['Differential current (kA)'] + [r2(x / 1000) if x else '-' for x in dif])
+        T[ty] = pd.DataFrame(rows, columns=['Quantity'] + ends)
+    # summary: one value per source, then the average and the spread
+    src = ['FaultGuard AI'] + types
+    def stat(vals):
+        x = [v for v in vals if v is not None]
+        if not x:
+            return '-', '-'
+        m = float(np.mean(x)); h = (max(x) - min(x)) / 2
+        return m, h
+    fgl = a['loc_km'] if a.get('loc_method') == 'two-ended' else from_ref(ref, fg_.get(ref, {}).get('loc'))
+    locs = [fgl] + [np.mean([x for x in rel[t]['loc'].values() if x is not None]) if any(x is not None for x in rel[t]['loc'].values()) else None for t in types]
+    S = []
+    m, h = stat(locs)
+    S.append([f'Fault location from {ref} (km)'] + [r1(x) for x in locs] + [r1(m) if m != '-' else '-', f"± {h:.1f} km ({h / L * 100:.0f}% of the line)" if h != '-' else '-'])
+    for st in ends:
+        vals = [fg_.get(st, {}).get('i')] + [rel[t]['i'][st] for t in types]
+        m, h = stat(vals)
+        S.append([f'Fault current at {st} (kA)'] + [r2(x) for x in vals] + [r2(m) if m != '-' else '-', f"± {h:.2f} kA" if h != '-' else '-'])
+    for st in ends:
+        vals = [fg_.get(st, {}).get('clr')] + [rel[t]['dur'][st] for t in types]
+        m, h = stat(vals)
+        S.append([f'Fault duration at {st} (ms)'] + [r1(x) for x in vals] + [r1(m) if m != '-' else '-', f"± {h:.0f} ms" if h != '-' else '-'])
+    ty_all = [fg_.get(ref, {}).get('type')] + [next((x for x in rel[t]['type'].values() if x), None) for t in types]
+    agree = len({x for x in ty_all if x}) == 1
+    S.insert(0, ['Fault type'] + [x or '-' for x in ty_all] + [ty_all[0] if agree else 'disagree', 'all agree' if agree else 'check'])
+    T['summary'] = pd.DataFrame(S, columns=['Quantity'] + src + ['Average', 'Spread'])
+    return T
+
+
 def line_ends(a, res):
     """One row per line end: what its disturbance record and its relays saw, with every location given from the same end."""
     L = a['line']['length_km']; ref = short_station(a.get('station'))
@@ -1805,6 +1890,16 @@ def analyze_incident(records, events=None, settings=None, line=None, setting=Non
                 a['Reasons'][m_] = [re.sub(r'The fault is at \d+% of the line', f'The fault is at {pct}% of the line (location from both ends)', w)
                                     for w in a['Reasons'][m_]]
     a['ends'] = line_ends(a, res)
+    st_ = []
+    for n, _, x in res:
+        if x.get('fault'):
+            st = short_station(x.get('station')) or n
+            if st not in [e['station'] for e in st_]:
+                st_.append({'station': st, 'type': str(x.get('type')), 'loc': x.get('loc_single_km', x.get('loc_km')) if x is a else x.get('loc_km'),
+                            'i': x.get('I_fault_max_kA'), 'trip': x.get('operate_ms'), 'cb': x.get('breaker_ms'), 'clr': x.get('clearing_ms')})
+    a['end_records'] = st_
+    a['end_list'] = [e['station'] for e in st_] + [s for s in sorted({v.get('Station') for v in (a.get('relay_reports') or {}).values() if v.get('Station')})
+                                                     if s not in [e['station'] for e in st_]]
     # differences between the records of the same incident
     types = {x['Fault Type'] for x in a['records'] if x['Fault Type'] not in ('No fault',)}
     if len(types) > 1:
@@ -1954,9 +2049,13 @@ def line_fig(a, width=10, height=3.3):
     for dev, v in reps.items():
         m_ = _re.match(r'(-?\d+(?:\.\d+)?)\s*km', str(v.get('Relay Fault Location', '')))
         if m_:
-            x = float(m_.group(1))
-            ax.plot(x, -0.32, marker='^', ms=9, color='#1f5fbf', zorder=5)
-            ax.text(x, -0.55 - 0.34 * (k % 2), f"{dev} {x:.1f} km", ha='right' if x > 0.9 * L else 'center', va='top', fontsize=7.5, color='#1f5fbf')
+            x0 = float(m_.group(1))
+            far = bool(v.get('Station')) and bool(a.get('station_short')) and v['Station'] != a['station_short']
+            x = L - x0 if far else x0                       # the relay at the other end measures from its own end
+            lab = f"{dev} {x0:.1f} km" + (f" (from {v['Station']})" if far else '')
+            ax.plot(x, -0.32, marker='^', ms=9, color='#7b3fbf' if far else '#1f5fbf', zorder=5)
+            ax.text(x, -0.55 - 0.34 * (k % 2), lab, ha='right' if x > 0.9 * L else ('left' if x < 0.1 * L else 'center'), va='top', fontsize=7.5,
+                    color='#7b3fbf' if far else '#1f5fbf')
             k += 1
     if a.get('loc_two_ended_km') is not None:
         x = a['loc_two_ended_km']; ax.plot(x, 0.32, marker='v', ms=9, color='#1a9e5c', zorder=5)
