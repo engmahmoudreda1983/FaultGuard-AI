@@ -174,24 +174,14 @@ def incident_pdf(a, rec):
             S.append(PageBreak())
             S.append(P(f"Disturbance record {k_ + 1}: {fg.record_source(r_, a_)} - currents, voltages and relay contacts", H2))
             S.append(fig_image(wave_fig(r_, a_), W if k_ == 0 else W))
-        done_st = set()
-        for r_, x_ in [(rec, a)] + [(r2, a2) for _, r2, a2 in (a.get('other_records') or [])]:
-            st_ = fg.short_station(x_.get('station')) or ''
-            if x_.get('traj') is None or not is_line or a.get('no_line_data') or st_ in done_st:
-                continue                       # one R-X page per line end
-            done_st.add(st_)
-            xx = dict(x_); mm = dict(meta)
-            if mm.get('End A') and mm.get('End B') and st_ and fg.short_station(mm['End A']) != st_ and fg.short_station(mm['End B']) == st_:
-                mm['End A'], mm['End B'] = mm['End B'], mm['End A']        # the relay's own station first
-            xx['meta'] = mm
-            dev = (x_.get('record_device') or '').split(' ')[0] or 'relay'
-            sdev = x_.get('settings_dev') or dev
+        for v_ in (fg.rx_ends(a, rec) if is_line else []):       # one R-X page per line end
+            st_ = v_['station']
             S.append(PageBreak())
-            S.append(P(f"Impedance seen by the relay at {st_ or 'the local end'} ({dev}) - R-X", H2))
-            S.append(P(f"Measured from the {st_} disturbance record; zones from the {sdev} {st_} settings. The line is drawn from {st_} towards "
-                       f"{fg.short_station(mm.get('End B')) or 'the remote end'}.", SMALL))
-            S.append(fig_image(rx_fig(xx), W * 0.92))
-            zs = x_.get('zone_seen')
+            S.append(P(f"Impedance seen by the relay at {st_ or 'the local end'} ({v_['dev']}) - R-X", H2))
+            S.append(P(f"Measured from the {st_} disturbance record; zones from the {v_['sdev']} {st_} settings. The line is drawn from {st_} towards "
+                       f"{v_['remote']}.", SMALL))
+            S.append(fig_image(rx_fig(v_['a']), W * 0.92))
+            zs = v_['zone_seen']
             if zs is not None:
                 S.append(P('The star marks the impedance one cycle into the fault; the blue dots show its path from the load point into the fault. '
                            + ('It lies outside every zone.' if zs == 0 else f"It lies inside zone {zs}."), SMALL))

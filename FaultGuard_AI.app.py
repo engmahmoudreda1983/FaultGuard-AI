@@ -655,14 +655,23 @@ def show_incident(a, rec):
         mpl(fg.wave_fig(r_, a_))
     with st.expander("🔎 Interactive view of the whole record (zoom and hover)"):
         st.plotly_chart(wave_plot(rec, a), width=STRETCH, key='fp_w')
-    c1, c2 = st.columns([1, 1.05]) if is_line else (None, st.container())
-    if is_line:
-        with c1:
-            st.markdown("#### Impedance seen by the relay (R-X)")
-            mpl(fg.rx_fig(a))
-    with c2:
+    views = fg.rx_ends(a, rec) if is_line else []
+    if views:                                            # one R-X diagram per line end, side by side
+        st.markdown("#### Impedance seen by the relay (R-X), each line end")
+        for col, v_ in zip(st.columns(len(views)), views):
+            with col:
+                st.markdown(f"**{v_['station'] or 'Local end'} ({v_['dev']})**")
+                st.caption(f"From the {v_['station']} disturbance record; zones from the {v_['sdev']} {v_['station']} settings. "
+                           f"Line drawn from {v_['station']} towards {v_['remote']}."
+                           + ('' if v_['zone_seen'] is None else (' Outside every zone.' if v_['zone_seen'] == 0 else f" Inside zone {v_['zone_seen']}.")))
+                mpl(fg.rx_fig(v_['a']))
+    elif is_line and a.get('no_line_data'):
+        st.info("R-X diagram not drawn: no settings file gave the line data and the zones.")
+    c1, c2 = st.columns([1, 1])
+    with c1:
         st.markdown("#### FaultGuard AI vs the relays' own fault records")
         st.dataframe(compare_table(a), hide_index=True, width=STRETCH)
+    with c2:
         st.markdown("#### Measured values (primary)")
         st.dataframe(measured_table(a), hide_index=True, width=STRETCH)
     st.markdown("#### Assessment")

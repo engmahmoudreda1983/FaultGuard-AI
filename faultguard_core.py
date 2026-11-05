@@ -2236,6 +2236,25 @@ def wave_fig(rec, a, width=10, height=None):
     return fig
 
 
+
+def rx_ends(a, rec=None):
+    """One R-X view per line end (the main record first): (station, device, settings device, remote station, analysis with its own meta)."""
+    out, done = [], set()
+    meta = a.get('meta') or {}
+    for r_, x_ in [(rec, a)] + [(r2, a2) for _, r2, a2 in (a.get('other_records') or [])]:
+        st_ = short_station(x_.get('station')) or ''
+        if x_.get('traj') is None or a.get('no_line_data') or st_ in done:
+            continue
+        done.add(st_)
+        xx = dict(x_); mm = dict(meta)
+        if mm.get('End A') and mm.get('End B') and st_ and short_station(mm['End A']) != st_ and short_station(mm['End B']) == st_:
+            mm['End A'], mm['End B'] = mm['End B'], mm['End A']          # the relay's own station first
+        xx['meta'] = mm
+        dev = (x_.get('record_device') or '').split(' ')[0] or 'relay'
+        out.append({'station': st_, 'dev': dev, 'sdev': x_.get('settings_dev') or dev, 'remote': short_station(mm.get('End B')) or 'the remote end',
+                    'a': xx, 'zone_seen': x_.get('zone_seen')})
+    return out
+
 def rx_fig(a, width=7.2, height=6.4):
     """R-X diagram: zones as set (quadrilateral or mho, filled), line A -> B, impedance trajectory and the fault point."""
     line = a['line']; st = a['setting']; Z = complex(line['r1'], line['x1']) * line['length_km']
