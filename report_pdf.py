@@ -119,7 +119,7 @@ def incident_pdf(a, rec):
     S.append(banner(title, fg.summary_text(a), 'EXCELLENT' if a.get('likely_test') else a['Status']))
     if not a.get('likely_test'):
         S.append(P(fg.risk_note(a), SMALL))
-    if a.get('fault') and is_line:
+    if a.get('fault') and is_line and not a.get('no_line_data'):
         S.append(P('Fault location on the line', H2))
         S.append(fig_image(line_fig(a)))
     if a.get('fault'):
@@ -161,7 +161,7 @@ def incident_pdf(a, rec):
             S.append(PageBreak())
             S.append(P(f"Disturbance record {k_ + 1}: {fg.record_source(r_, a_)} - currents, voltages and relay contacts", H2))
             S.append(fig_image(wave_fig(r_, a_), W if k_ == 0 else W))
-        if a.get('traj') is not None and is_line:
+        if a.get('traj') is not None and is_line and not a.get('no_line_data'):
             S.append(PageBreak())
             S.append(P('Impedance seen by the relay (R-X)', H2))
             S.append(fig_image(rx_fig(a), W * 0.92))
@@ -177,7 +177,8 @@ def incident_pdf(a, rec):
                     ['Protected equipment', eq, 'Type / number', f"{meta.get('Equipment Type', '-')} {meta.get('Equipment', '')}"],
                     ['Station A (local)', meta.get('End A', '-') or '-', 'Station B (remote)', meta.get('End B', '-') or '-'],
                     ['Relays', meta.get('Relay', '-') or '-', 'Record start', str(a.get('record_start') or '-')[:23]],
-                    ['Line length', f"{a['line']['length_km']:.1f} km", 'Line impedance (per km)', f"Z1 {a['line']['r1']:.3f}+j{a['line']['x1']:.3f}, Z0 {a['line']['r0']:.3f}+j{a['line']['x0']:.3f} ohm"]],
+                    (['Line length', 'not known (no settings file)', 'Line impedance (per km)', 'not known (no settings file)'] if a.get('no_line_data') else
+                     ['Line length', f"{a['line']['length_km']:.1f} km", 'Line impedance (per km)', f"Z1 {a['line']['r1']:.3f}+j{a['line']['x1']:.3f}, Z0 {a['line']['r0']:.3f}+j{a['line']['x0']:.3f} ohm"])],
                    [W * 0.16, W * 0.34, W * 0.18, W * 0.32]))
     if a.get('fault'):
         rows = [['Channel', 'Pre-fault (rms)', 'Fault (rms)', 'Fault angle']]

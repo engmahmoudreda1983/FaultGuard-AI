@@ -749,7 +749,18 @@ def align_events(E, t0, dur_s, trigger=None):
             best, bh = n, h
     if bh and best > 0:
         E = E.copy(); E['Timestamp'] = ts + pd.Timedelta(hours=bh)
-    return E, (bh if best > 0 else 0)
+    if best > 0:
+        return E, bh
+    # the relay clock is off by a time that is not whole hours: line up its fault record nearest to the record start
+    rec_ = E['Event'].astype(str).str.contains(r'fault\s*rec', case=False, regex=True)
+    if rec_.any():
+        d_ = (pd.Timestamp(t0) - ts[rec_]).dt.total_seconds()
+        d_ = d_[d_.abs() < 13 * 3600]
+        if len(d_):
+            sh_s = float(d_.loc[d_.abs().idxmin()]) + dur_s * 0.25
+            E = E.copy(); E['Timestamp'] = ts + pd.Timedelta(seconds=sh_s)
+            return E, round(sh_s / 3600, 3)
+    return E, 0
 
 
 def classify_event(e):
@@ -1088,6 +1099,9 @@ def assess(out, st):
     elems = [e[1] for e in out['elements']]
     inst = [e for e in elems if re.search(r'zone 1|87l|differential|sotf|aided|transfer', e.lower())]
     loc = out.get('loc_pu')
+    no_line = bool(st.get('no_line_data'))
+    if no_line:
+        loc = None                       # default line data: no judgement from the location or the zones
     # protection operation
     s, w = 0.0, []
     op = out.get('operate_ms')
@@ -1131,8 +1145,10 @@ def assess(out, st):
                          f"without delay by the aided scheme / line differential instead of waiting for zone 2.")
             elif st['z1_reach'] < loc <= 1.05 and any('zone 1' in e.lower() for e in elems):
                 s = max(s, 40.0); w.append(f"Zone 1 tripped for a fault at {loc * 100:.0f}% of the line, at or beyond its {st['z1_reach'] * 100:.0f}% reach: check the reach setting and the line data.")
-    zs = zone_seen(out)
+    zs = None if no_line else zone_seen(out)
     out['zone_seen'] = zs
+    if no_line:
+        w.append('Location and zone checks not done: no relay settings file, so the line data and zone reaches are not known.')
     if zs is not None and out.get('Zapp') is not None:
         zt = f"R {out['Zapp'].real:.1f} Ω, X {out['Zapp'].imag:.1f} Ω"
         z1_trip = any('zone 1' in e.lower() for e in elems)
@@ -1164,7 +1180,7 @@ def assess(out, st):
             if own and v.get('Station') and v['Station'] != own:
                 x = out['line']['length_km'] - x          # the relay at the other end measures from its own end
             rel[dev] = x
-    if rel and out.get('loc_km') is not None:
+    if rel and out.get('loc_km') is not None and not st.get('no_line_data'):
         tol = max(3.0, 0.05 * out['line']['length_km'])
         diffs = {d: out['loc_km'] - x for d, x in rel.items()}
         txt = ', '.join(f"{d} {x:.1f} km" for d, x in rel.items())
@@ -1257,8 +1273,13 @@ def assess(out, st):
     for dev, v in out.get('relay_reports', {}).items():
         sh = out['clock_shift'].get(dev, 0)
         off = v.get('Clock vs record (ms)')
-        if sh:
-            w.append(f"{dev} event times are {abs(sh)} h {'behind' if sh > 0 else 'ahead of'} the record (relay clock on another time zone, e.g. UTC); shifted to match.")
+        if sh and float(sh).is_integer():
+            w.append(f"{dev} event times are {abs(int(sh))} h {'behind' if sh > 0 else 'ahead of'} the record (relay clock on another time zone, e.g. UTC); shifted to match.")
+        elif sh:
+            hh = int(abs(sh)); mm = int(round((abs(sh) - hh) * 60))
+            s = max(s, 30.0)
+            w.append(f"{dev} event times are about {hh} h {mm} min {'behind' if sh > 0 else 'ahead of'} the record: the relay clock is wrong "
+                     f"(time zone and drift); its events were lined up on its fault record. Set the relay clock and check the time synchronisation.")
         if off is not None and abs(off) > 20:
             s = max(s, 30.0); w.append(f"{dev} clock differs from the record by about {off:.0f} ms" + (' after the time-zone shift' if sh else '') +
                                        ": the relays are not time-synchronised (check GPS / SNTP / IRIG-B). Its events were aligned to the record using its own fault duration.")
@@ -1324,7 +1345,8 @@ def summary_auto(a):
     inc = a.get('t_inception_ms') or 0
     cl, oth = cleared_elements(a)
     els = ', '.join(e[1] + (f" ({e[0] - inc:.0f} ms)" if e[0] is not None else '') for e in cl) or 'element not identified'
-    s = (f"{TYPE_TEXT.get(a['type'], a['type'])} fault, {a['I_fault_max_kA']:.1f} kA, located at {loc}. "
+    where = f"located at {loc}" if a.get('loc_km') is not None else ('location from the relays (no line data)' if a.get('no_line_data') else 'not located')
+    s = (f"{TYPE_TEXT.get(a['type'], a['type'])} fault, {a['I_fault_max_kA']:.1f} kA, {where}. "
          f"Cleared by {els}" + (f" in {a['clearing_ms']:.0f} ms" if a.get('clearing_ms') else '') +
          (f" (first trip {a['operate_ms']:.0f} ms" + (f" by {a['trip_by']}" if a.get('trip_by') not in (None, 'record') else '') +
           f" + breaker {a['breaker_ms']:.0f} ms)" if a.get('operate_ms') is not None and a.get('breaker_ms') is not None else '') +
@@ -1849,6 +1871,10 @@ def analyze_incident(records, events=None, settings=None, line=None, setting=Non
             vals = {(s.get('device') or n): s[k] for n, s in sts if s.get(k) is not None}
             if len(vals) > 1 and (max(vals.values()) - min(vals.values())) > 0.02 * max(abs(v) for v in vals.values()):
                 notes.append(f"The relays have different {lab} settings: " + ', '.join(f"{d} {v:g}" for d, v in vals.items()) + '. Check which one is correct.')
+    if not used and all(abs(float(line.get(k, -1)) - float(v)) < 1e-9 for k, v in DEFAULT_LINE.items()):
+        notes.append('No relay settings file: the line data are the default values (100 km, typical 400 kV impedance), so the FaultGuard fault '
+                     'location is not valid for this line. Upload the settings file of the line relay to locate the fault.')
+        setting['no_line_data'] = True
     res = []
     for name, rec in records:
         a = analyze(rec, events, line, setting, model=model, scale=scale, ct=ct, vt=vt, meta=meta)
@@ -1856,6 +1882,9 @@ def analyze_incident(records, events=None, settings=None, line=None, setting=Non
         res.append((name, rec, a))
     if not res:
         raise ValueError('No disturbance record.')
+    if setting.get('no_line_data'):
+        for _, _, x_ in res:
+            x_['loc_km'] = None; x_['loc_pu'] = None; x_['no_line_data'] = True
     for n_, r_, x_ in res:
         if x_.get('record_device'):
             continue

@@ -75,15 +75,27 @@ def trip_html(a, rec):
         if a2.get('fault') and a2.get('t_inception_ms') is not None:
             recs.append(_rec_data(r2, a2, f'record {k + 2}'))
     L = a['line']['length_km']
-    ends = [r['station'] for r in recs]
+    ends, line_recs = [], []
+    for k, r in enumerate(recs):                      # one record per line end for the line view
+        if r['station'] not in ends:
+            ends.append(r['station']); line_recs.append(k)
+    remote_i = None
     if len(ends) == 1:
-        A_, B_ = fg.stations(a) if hasattr(fg, 'stations') else ('A', 'B')
-        ends = [ends[0], str(B_)]
+        B_ = fg.short_station((a.get('meta') or {}).get('End B')) or 'Remote end'
+        if B_ == ends[0]:
+            B_ = fg.short_station((a.get('meta') or {}).get('End A')) or 'Remote end'
+        ends.append(B_); line_recs.append(None)
+        for dev, v in (a.get('relay_reports') or {}).items():      # the line differential relay reports the remote current
+            xs = [v.get(f'Relay I{p} remote 1') for p in 'ABC']
+            xs = [x for x in xs if x is not None]
+            if xs:
+                remote_i = {'i': round(max(xs) / 1000, 2), 'src': dev}
+                break
     data = {'title': eq, 'incident': meta.get('Incident', ''), 'date': meta.get('Date', ''), 'relays': meta.get('Relay', ''),
             'status': a.get('Status'), 'slab': SLAB.get(a.get('Status'), a.get('Status')), 'scol': SCOL.get(a.get('Status'), '#555'),
             'headline': fg.risk_title(a, SLAB.get(a.get('Status'), '')), 'summary': fg.summary_text(a), 'type': str(a.get('type')),
             'typetext': fg.TYPE_TEXT.get(a.get('type'), ''), 'L': L, 'loc': a.get('loc_km'), 'locm': a.get('loc_method') or 'single-ended',
-            'ends': ends, 'recs': recs}
+            'ends': ends, 'recs': recs, 'lineRecs': line_recs, 'remoteI': remote_i, 'noLine': bool(a.get('no_line_data'))}
     TS = fg.source_tables(a)
     tables = ''
     if TS:
@@ -242,10 +254,12 @@ function drawLine(t){ const cv = $('lineCv'); const [c, w, h] = fit(cv); c.clear
   [[xa, D.ends[0]], [xb, D.ends[1]]].forEach(([x, n]) => { c.fillStyle = '#0b2e59'; c.fillRect(x - 7, yl - 45, 14, 90); c.font = '700 14px Segoe UI'; c.textAlign = 'center'; c.fillText(n, x, yl - 55); });
   c.textAlign = 'left';
   // line, energised or not
-  const st = D.recs.map(r => endState(r, t));
-  const dead = st.length > 1 ? st.every(s => s.open) : st[0].open;
+  const loc0 = D.recs[D.lineRecs[0]];
+  const st = D.lineRecs.map(k => k == null ? null : endState(D.recs[k], t));
+  if (st[1] == null) { const s0 = st[0]; st[1] = {I: (D.remoteI && t >= 0 && !s0.open) ? D.remoteI.i : 0, V: null, open: s0.open, trip: s0.trip, remote: true}; }
+  const dead = st.every(s => s.open);
   c.strokeStyle = dead ? '#98a2b3' : '#0b2e59'; c.lineWidth = 5; c.beginPath(); c.moveTo(xa + 28, yl); c.lineTo(xb - 28, yl); c.stroke();
-  c.fillStyle = '#667085'; c.font = '12px Segoe UI'; c.textAlign = 'center'; c.fillText(`${L.toFixed(1)} km`, (xa + xb) / 2, yl + 62); c.textAlign = 'left';
+  c.fillStyle = '#667085'; c.font = '12px Segoe UI'; c.textAlign = 'center'; c.fillText(D.noLine ? 'line length not known (no settings file)' : `${L.toFixed(1)} km`, (xa + xb) / 2, yl + 62); c.textAlign = 'left';
   // breakers
   st.forEach((s, k) => { const x = k === 0 ? xa + 20 : xb - 20; c.fillStyle = s.open ? '#1a9e5c' : '#d62728'; c.fillRect(x - 9, yl - 9, 18, 18);
     c.fillStyle = '#344054'; c.font = '600 11px Segoe UI'; c.textAlign = k === 0 ? 'left' : 'right';
@@ -257,9 +271,9 @@ function drawLine(t){ const cv = $('lineCv'); const [c, w, h] = fit(cv); c.clear
     c.beginPath(); c.moveTo(-6, -62); c.lineTo(10, -62); c.lineTo(1, -30); c.lineTo(12, -30); c.lineTo(-8, 4); c.lineTo(-2, -22); c.lineTo(-12, -22); c.closePath(); c.fill(); c.stroke(); c.restore();
     if (on) { c.fillStyle = 'rgba(255,90,30,' + (0.25 + 0.2 * Math.sin(t * 0.6)) + ')'; c.beginPath(); c.arc(xf, yl, 20, 0, 2 * Math.PI); c.fill(); }
     c.fillStyle = '#b42318'; c.font = '700 12.5px Segoe UI'; c.textAlign = 'center';
-    c.fillText(`${D.type} fault · ${D.loc != null ? D.loc.toFixed(1) + ' km from ' + D.ends[0] : ''}`, xf, yl - 72); c.textAlign = 'left'; }
+    c.fillText(`${D.type} fault` + (D.loc != null ? ` · ${D.loc.toFixed(1)} km from ${D.ends[0]}` : (D.noLine ? ' · location not known (no line data)' : '')), xf, yl - 72); c.textAlign = 'left'; }
   // current arrows into the fault
-  const Imax = Math.max(...D.recs.map(r => Math.max(...['IA', 'IB', 'IC'].map(k => r.ch[k] ? Math.max(...r.ch[k].rms) : 0))), 0.1);
+  const Imax = Math.max(...D.recs.map(r => Math.max(...['IA', 'IB', 'IC'].map(k => r.ch[k] ? Math.max(...r.ch[k].rms) : 0))), D.remoteI ? D.remoteI.i : 0, 0.1);
   st.forEach((s, k) => { const x0 = k === 0 ? xa + 34 : xb - 34, x1 = k === 0 ? xf - 26 : xf + 26, dir = k === 0 ? 1 : -1;
     const th = 2 + 16 * s.I / Imax; if (s.I < 0.02) return;
     const col = t >= 0 && !s.open ? '#d62728' : '#1f5fbf';
@@ -267,7 +281,8 @@ function drawLine(t){ const cv = $('lineCv'); const [c, w, h] = fit(cv); c.clear
     c.beginPath(); c.moveTo(x1, yl - 30); c.lineTo(x1 - dir * (14 + th), yl - 30 - th - 4); c.lineTo(x1 - dir * (14 + th), yl - 30 + th + 4); c.closePath(); c.fill(); c.globalAlpha = 1;
     c.font = '700 14px Segoe UI'; c.textAlign = k === 0 ? 'left' : 'right'; c.fillStyle = col;
     c.fillText(`${s.I.toFixed(2)} kA`, k === 0 ? x0 : x0, yl - 44 - th / 2);
-    c.font = '12px Segoe UI'; c.fillStyle = '#344054'; if (s.V != null) c.fillText(`lowest phase voltage ${s.V.toFixed(0)} kV`, x0, yl + 45); c.textAlign = 'left'; });
+    c.font = '12px Segoe UI'; c.fillStyle = '#344054'; if (s.V != null) c.fillText(`lowest phase voltage ${s.V.toFixed(0)} kV`, x0, yl + 45);
+    if (s.remote && D.remoteI) c.fillText(`remote current from the ${D.remoteI.src} fault record (no record at this end)`, x0, yl + 45); c.textAlign = 'left'; });
   if (dead && t >= 0) { c.fillStyle = '#1a9e5c'; c.font = '700 13px Segoe UI'; c.textAlign = 'center'; c.fillText('Fault cleared from both ends', (xa + xb) / 2, 22); c.textAlign = 'left'; }
   else if (t < 0) { c.fillStyle = '#667085'; c.font = '600 13px Segoe UI'; c.textAlign = 'center'; c.fillText('Before the fault: load current', (xa + xb) / 2, 22); c.textAlign = 'left'; }
 }
