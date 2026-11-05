@@ -42,8 +42,9 @@ def P(x, st=BODY):
     return Paragraph(clean(x), st)
 
 
-def table(rows, widths, head=True, zebra=True, align_right=()):
-    data = [[Paragraph(clean(c), CELLB if (head and i == 0) else CELL) for c in r] for i, r in enumerate(rows)]
+def table(rows, widths, head=True, zebra=True, align_right=(), cell=None, cellb=None):
+    cell, cellb = cell or CELL, cellb or CELLB
+    data = [[Paragraph(clean(c), cellb if (head and i == 0) else cell) for c in r] for i, r in enumerate(rows)]
     t = Table(data, colWidths=widths, repeatRows=1 if head else 0)
     st = [('GRID', (0, 0), (-1, -1), 0.4, LINE), ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
           ('TOPPADDING', (0, 0), (-1, -1), 2.5), ('BOTTOMPADDING', (0, 0), (-1, -1), 2.5)]
@@ -121,11 +122,18 @@ def incident_pdf(a, rec):
         S.append(fig_image(line_fig(a)))
         LE = fg.location_explanation(a)
         if LE:
-            rows_, txt_ = LE
-            S.append(P('How the fault location was found', H3))
-            S.append(table(rows_, [W * 0.24, W * 0.18, W * 0.18, W * 0.16, W * 0.24]))
-            for t_ in txt_:
-                S.append(P(t_, SMALL))
+            S.append(P('How the fault location was found', H2))
+            S.append(P(LE['intro'], BODY))
+            CL = ParagraphStyle('cl', parent=BODY, fontSize=9, leading=11.5); CLB = ParagraphStyle('clb', parent=CL, fontName='Helvetica-Bold', textColor=colors.white)
+            widths = {4: [W * 0.12, W * 0.32, W * 0.28, W * 0.28], 3: [W * 0.17, W * 0.63, W * 0.2], 2: [W * 0.7, W * 0.3]}
+            for title_, rows_, notes_ in LE['steps']:
+                S.append(KeepTogether([P(title_, H3), table(rows_, widths[len(rows_[0])], cell=CL, cellb=CLB)]))
+                for t_ in notes_:
+                    S.append(Spacer(1, 3)); S.append(P(t_, BODY))
+            if LE.get('result'):
+                S.append(Spacer(1, 8))
+                RS = ParagraphStyle('res', parent=BODY, fontSize=11.5, leading=15, textColor=NAVY, fontName='Helvetica-Bold', alignment=1)
+                S.append(table([[LE['result']]], [W], head=False, zebra=False, cell=RS))
     two_ends = len(fg.end_views(a)) > 1 if a.get('fault') else False
     if a.get('fault'):
         tl = fg.timeline_fig(a, rec)
