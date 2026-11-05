@@ -1789,6 +1789,10 @@ def source_tables(a):
     return T
 
 
+def _norm_sig(x):
+    return re.sub(r'[^a-z0-9]', '', str(x).lower())
+
+
 def line_ends(a, res):
     """One row per line end: what its disturbance record and its relays saw, with every location given from the same end."""
     L = a['line']['length_km']; ref = short_station(a.get('station'))
@@ -1852,6 +1856,24 @@ def analyze_incident(records, events=None, settings=None, line=None, setting=Non
         res.append((name, rec, a))
     if not res:
         raise ValueError('No disturbance record.')
+    for n_, r_, x_ in res:
+        if x_.get('record_device'):
+            continue
+        st = short_station(r_.get('station'))
+        E_ = x_.get('events_all')
+        if not st or E_ is None or 'Device' not in E_:
+            continue
+        chans = {_norm_sig(c) for c in r_['digital'] if not re.search(r'unused|spare', c, re.I)}
+        best = (0, None)
+        for dev, Ed in E_.groupby('Device'):
+            if not dev.endswith(' ' + st):
+                continue
+            names = {_norm_sig(re.sub(r'\s+(ON|OFF)$', '', e, flags=re.I)) for e in Ed['Event'].astype(str)}
+            k = len(chans & names)
+            if k > best[0]:
+                best = (k, dev)
+        if best[1]:
+            x_['record_device'] = best[1]
     score = lambda x: (bool(x[2].get('fault')), not x[2].get('likely_test'),
                        sum(x[2]['channels'].get(k) is not None for k in ('IA', 'IB', 'IC', 'VA', 'VB', 'VC', 'IN')), len(x[1]['digital']))
     name, rec, a = max(res, key=score)
@@ -2091,7 +2113,7 @@ def wave_fig(rec, a, width=10, height=None):
     ch = a['channels']
     t, t0, t1 = _window(rec, a)
     m = (t >= t0) & (t <= t1)
-    rows, srcs = binary_rows(rec, a, t0, t1, own_only=True)
+    rows, srcs = binary_rows(rec, a, t0, t1, max_rows=32, own_only=True)
     nb = len(rows)
     height = height or (6.2 + 0.3 * nb)
     ratios = [3, 3] + ([max(1.3, 0.3 * nb)] if nb else [])
@@ -2136,7 +2158,7 @@ def wave_fig(rec, a, width=10, height=None):
                  fontsize=8, color='#333', bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='#ccc'))
     if nb:
         axB = axs[2]
-        axB.set_title(f'Binary signals - relay contacts    [record: {rsrc}, {srcs[0].split(": ", 1)[-1]}]', loc='left', fontsize=9.2, fontweight='bold', color='#0b2e59')
+        axB.set_title('Binary signals - relay contacts and events    [' + '; '.join(srcs) + ']', loc='left', fontsize=8.6, fontweight='bold', color='#0b2e59')
         src_col = {}
         palette = ['#0b2e59', '#8e24aa', '#00796b', '#bf360c']
         for k_, (nm, src, iv) in enumerate(rows):
@@ -2147,7 +2169,8 @@ def wave_fig(rec, a, width=10, height=None):
                                 hatch=None if src == rows[0][1] else '////')
             src_col.setdefault(src, palette[len(src_col) % len(palette)])
         axB.set_yticks(range(nb))
-        labs = [nm[:24] for nm, src, _ in rows][::-1]
+        multi = len({src for _, src, _ in rows}) > 1
+        labs = [(f"{src.split(' ')[0]} · {nm[:22]}" if multi else nm[:24]) for nm, src, _ in rows][::-1]
         axB.set_yticklabels(labs, fontsize=7.3)
         for tl, (nm, src, _) in zip(axB.get_yticklabels(), rows[::-1]):
             tl.set_color(src_col[src])
@@ -2252,6 +2275,8 @@ def record_source(rec, a):
     """Name of the relay that made a disturbance record (matched through its event list), else the record station/device."""
     dev = a.get('record_device')
     st_ = _re.sub(r'\s{2,}', ' ', _re.sub(r'\b(\d+\s*kv|s/?s|substation|sub)\b', '', (rec.get('station') or ''), flags=_re.I)).strip(' -').title()
+    if dev and st_ and st_.upper() in dev.upper():
+        return f"{dev} disturbance record"
     return f"{dev} ({st_})" if dev and st_ else (dev or st_ or 'record')
 
 
@@ -2273,10 +2298,8 @@ def binary_rows(rec, a, t0, t1, max_rows=22, own_only=False):
         legend.append(f"{tag}: {n_} of {D.shape[1]} record channels changed")
     main_tag = a.get('record_device') or (rec.get('station') or 'record').strip().title()
     from_record(rec, a, 0.0, main_tag)
-    if own_only:
-        return rows[:max_rows], legend
     have = {main_tag}
-    for n_, r2, a2 in a.get('other_records') or []:
+    for n_, r2, a2 in ([] if own_only else (a.get('other_records') or [])):
         if a2.get('t_inception_ms') is None or a.get('t_inception_ms') is None:
             continue
         tag = a2.get('record_device') or (r2.get('station') or n_).strip().title()
@@ -2286,8 +2309,11 @@ def binary_rows(rec, a, t0, t1, max_rows=22, own_only=False):
     E = a.get('events'); t0r = a.get('record_start')
     if E is not None and t0r is not None and len(E):
         key = _re.compile(r'trip|start|diff|aid|intertrip|send|receiv|pole|cb\b|breaker|close|open|sotf|zone', _re.I)
+        own_st = a.get('station_short') or ''
         for dev, Ed in E.groupby('Device'):
             if dev in have or (a.get('record_device') and dev == a.get('record_device')):
+                continue
+            if own_only and own_st and not dev.endswith(' ' + own_st):
                 continue
             state, n_ = {}, 0
             for _, r in Ed.sort_values('Timestamp').iterrows():

@@ -12,6 +12,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 import faultguard_core as fg
+import trip_html
 import report_pdf as pdfrep
 
 st.set_page_config(page_title="FaultGuard AI", page_icon="⚡", layout="wide")
@@ -675,8 +676,10 @@ def show_incident(a, rec):
     so = fg.soe(a)
     st.dataframe(so, hide_index=True, width=STRETCH, height=min(420, 38 + 35 * len(so)))
     stem = str(m.get('Incident') or 'incident').replace(' ', '_').replace('/', '-')
-    d = st.columns(3)
+    d = st.columns(4)
     d[0].download_button("📄 Download Incident Report (PDF)", pdfrep.incident_pdf(a, rec), f"FaultGuard_{stem}.pdf", 'application/pdf', key='fp_pdf')
+    d[3].download_button("🎬 Dynamic report (HTML)", trip_html.trip_html(a, rec).encode('utf-8'), f"FaultGuard_{stem}_dynamic.html", 'text/html', key='fp_html',
+                         help='Replays the records of every line end: waveforms with a moving cursor, currents and voltages, phasors, breakers and events. Opens in any browser, no internet needed.')
     d[1].download_button("📥 Sequence of events (CSV)", so.to_csv(index=False).encode('utf-8-sig'), f"FaultGuard_{stem}_SOE.csv", 'text/csv', key='fp_soe')
     summ = pd.DataFrame([{k: v for k, v in to_record(a, '').items() if k not in ('Mode Risks', 'FMEA', 'Findings', 'Source', 'Analyzed')}])
     d[2].download_button("📥 Incident summary (CSV)", summ.to_csv(index=False).encode('utf-8-sig'), f"FaultGuard_{stem}_summary.csv", 'text/csv', key='fp_sum')
