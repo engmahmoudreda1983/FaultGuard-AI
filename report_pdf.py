@@ -119,9 +119,10 @@ def incident_pdf(a, rec):
     if a.get('fault') and is_line and not a.get('no_line_data'):
         S.append(P('Fault location on the line', H2))
         S.append(fig_image(line_fig(a)))
+    two_ends = len(fg.end_views(a)) > 1 if a.get('fault') else False
     if a.get('fault'):
         tl = fg.timeline_fig(a, rec)
-        if tl is not None:
+        if tl is not None and not two_ends:
             S.append(fig_image(tl))
         S.append(PageBreak())
         TS = fg.source_tables(a)
@@ -138,9 +139,21 @@ def incident_pdf(a, rec):
             T_ = TS['summary']; cols = list(T_.columns)
             S.append(KeepTogether([P('Summary: average and spread of the sources', H3),
                                    table([cols] + T_.astype(str).values.tolist(), [W * 0.27] + [W * 0.11] * (len(cols) - 2) + [W * (0.73 - 0.11 * (len(cols) - 2))])]))
-            S.append(P('Relay locations in the summary are the average of the two ends of the same relay type. Times are counted differently: the relay counts '
-                       'its trip time from its own start and its breaker time from the trip command to pole dead; FaultGuard counts from the fault inception '
-                       'in the record and the breaker time from the trip to current zero. Spread = half the difference between the highest and lowest value.', SMALL))
+            S.append(P('Relay values are as recorded by each relay in its own fault record: its trip time counts from its own start (0 = it tripped as it started) '
+                       'and its breaker time from the trip command to pole dead. FaultGuard counts from the fault inception in the record and the breaker time from '
+                       'the trip to current zero. Relay locations in the summary are the average of the two ends of the same relay type. '
+                       'Spread = half the difference between the highest and lowest value.', SMALL))
+        PR = fg.protection_by_relay(a) if fg.end_views(a) else None
+        if PR is not None and len(PR):
+            cols = list(PR.columns)
+            S.append(KeepTogether([P('Protection operation by relay (ms from the fault inception at each end)', H3),
+                                   table([cols] + PR.astype(str).replace({'nan': '-', 'None': '-'}).values.tolist(),
+                                         [W * x for x in (0.08, 0.07, 0.12, 0.08, 0.09, 0.27, 0.19, 0.1)])]))
+            S.append(P("'Record' = the relay's own disturbance record and event list; 'event list (aligned)' = its event list placed on the record of the same "
+                       'station (its clock is not synchronised, so its times are within about one cycle).', SMALL))
+            if two_ends and tl is not None:
+                S.append(P('Sequence of events at both ends (ms from the fault inception)', H3))
+                S.append(fig_image(tl))
         else:
             S.append(P('Fault analysis: FaultGuard AI against the relays', H2))
             C = fg.compare_table(a)
@@ -150,10 +163,6 @@ def incident_pdf(a, rec):
         if a.get('restored'):
             rs = a['restored']
             S.append(P(f"Line re-energised at {pd.Timestamp(rs['time']):%Y-%m-%d %H:%M:%S}, {fg.fmt_dur(rs['after_s'])} after the fault ({rs['device']}: {rs['event']}).", SMALL))
-        for n in a.get('notes', []):
-            if TS and n.startswith('Single-ended locations'):
-                continue
-            S.append(P(n, SMALL))
         for k_, (r_, a_) in enumerate([(rec, a)] + [(r2, a2) for _, r2, a2 in (a.get('other_records') or [])]):
             S.append(PageBreak())
             S.append(P(f"Disturbance record {k_ + 1}: {fg.record_source(r_, a_)} - currents, voltages and relay contacts", H2))
@@ -186,21 +195,46 @@ def incident_pdf(a, rec):
     S.append(table([['Item', 'Value', 'Item', 'Value'],
                     ['Protected equipment', eq, 'Type / number', f"{meta.get('Equipment Type', '-')} {meta.get('Equipment', '')}"],
                     ['Station A (local)', meta.get('End A', '-') or '-', 'Station B (remote)', meta.get('End B', '-') or '-'],
-                    ['Relays', meta.get('Relay', '-') or '-', 'Record start', str(a.get('record_start') or '-')[:23]],
+                    ['Relays', meta.get('Relay', '-') or '-', 'Record start (relay clock)',
+                     ' / '.join(f"{st_} {str(x_.get('record_start') or '-')[11:23]}" for st_, _, x_ in fg.end_views(a)) if two_ends else str(a.get('record_start') or '-')[:23]],
                     (['Line length', 'not known (no settings file)', 'Line impedance (per km)', 'not known (no settings file)'] if a.get('no_line_data') else
                      ['Line length', f"{a['line']['length_km']:.1f} km", 'Line impedance (per km)', f"Z1 {a['line']['r1']:.3f}+j{a['line']['x1']:.3f}, Z0 {a['line']['r0']:.3f}+j{a['line']['x0']:.3f} ohm"])],
                    [W * 0.16, W * 0.34, W * 0.18, W * 0.32]))
     if a.get('fault'):
-        rows = [['Channel', 'Pre-fault (rms)', 'Fault (rms)', 'Fault angle']]
+        V_ = fg.end_views(a) or [(fg.short_station(a.get('station')) or 'record', rec, a)]
+        hdr = ['Channel']
+        for st_, _, _ in V_:
+            hdr += [f'{st_} pre-fault', f'{st_} fault', f'{st_} angle']
+        rows = [hdr]
         for k in ('IA', 'IB', 'IC', 'IN', 'VA', 'VB', 'VC'):
-            if k in a['P']:
-                pre, flt = a['P'][k]; u = 'kA' if k.startswith('I') else 'kV'
-                rows.append([k, f"{abs(pre) / 1000:.3f} {u}", f"{abs(flt) / 1000:.3f} {u}", f"{np.degrees(np.angle(flt)):.0f} deg"])
-        S.append(KeepTogether([P('Measured values (primary)', H2), table(rows, [W * 0.2, W * 0.27, W * 0.27, W * 0.26])]))
+            r_ = [k]; u = 'kA' if k.startswith('I') else 'kV'
+            for _, _, x_ in V_:
+                if k in x_['P']:
+                    pre, flt = x_['P'][k]
+                    r_ += [f"{abs(pre) / 1000:.3f} {u}", f"{abs(flt) / 1000:.3f} {u}", f"{np.degrees(np.angle(flt)):.0f} deg"]
+                else:
+                    r_ += ['-', '-', '-']
+            rows.append(r_)
+        wc = (W * 0.1, ) + tuple([W * 0.9 / (3 * len(V_))] * (3 * len(V_)))
+        S.append(KeepTogether([P('Measured values (primary rms, one cycle before and one cycle into the fault)', H2), table(rows, list(wc))]))
+        if len(V_) > 1:
+            S.append(P('Fault angles are relative to each record\'s own time reference: the two records are not time-synchronised, so angles are '
+                       'not comparable between the two ends.', SMALL))
         if len(a.get('records') or []) > 1:
-            R_ = pd.DataFrame(a['records'])[['Record', 'Station', 'Fault Type', 'Location (km)', 'Fault Current (kA)', 'Trip (ms)', 'Breaker (ms)', 'Clearing (ms)', 'Voltages']]
+            allx = [(rec, a)] + [(r2, a2) for _, r2, a2 in (a.get('other_records') or [])]
+            rr = []
+            for r_, x_ in allx:
+                rr.append([fg.record_source(r_, x_).replace(' disturbance record', ''), str(x_.get('record_start') or '-')[:23],
+                           str(x_.get('type') if x_.get('fault') else 'no fault'),
+                           '-' if x_.get('loc_single_km', x_.get('loc_km')) is None else f"{(x_.get('loc_single_km') if x_ is a and x_.get('loc_single_km') is not None else x_.get('loc_km')):.1f}",
+                           f"{x_.get('I_fault_max_kA', 0):.2f}", '-' if x_.get('operate_ms') is None else f"{x_['operate_ms']:.1f}",
+                           '-' if x_.get('breaker_ms') is None else f"{x_['breaker_ms']:.1f}", '-' if x_.get('clearing_ms') is None else f"{x_['clearing_ms']:.1f}"])
             S.append(KeepTogether([P('Disturbance records of this incident', H2),
-                                   table([list(R_.columns)] + R_.astype(str).replace({'None': '-', 'nan': '-'}).values.tolist(), [W / len(R_.columns)] * len(R_.columns))]))
+                                   table([['Record (relay)', 'Record start (relay clock)', 'Fault type', 'Location from its own end (km)', 'Fault current (kA)',
+                                           'Trip (ms)', 'Breaker (ms)', 'Clearing (ms)']] + rr,
+                                         [W * x for x in (0.17, 0.2, 0.08, 0.13, 0.1, 0.1, 0.11, 0.11)]),
+                                   P('Each record start is shown as written by its relay clock. Trip, breaker and clearing times count from the fault inception '
+                                     'in that record.', SMALL)]))
         if a.get('settings_all'):
             T_ = fg.settings_table(a['settings_all'])
             T_ = T_[(T_.iloc[:, 1:] != '-').any(axis=1)]
@@ -214,6 +248,11 @@ def incident_pdf(a, rec):
     for r in fg.findings(a):
         S.append(P(f"- {r}"))
     S.append(Paragraph(f"<b>Action:</b> {clean(a['Action'])}", BODY))
+    nts = [n for n in a.get('notes', []) if not (n.startswith('Single-ended locations') and fg.source_tables(a))] if a.get('fault') else []
+    if nts:
+        S.append(P('Notes', H3))
+        for n in nts:
+            S.append(P(f"- {n}", SMALL))
     if (a.get('engineer_comments') or '').strip():
         S.append(P("Engineer's comments", H2))
         for ln in a['engineer_comments'].strip().splitlines():
@@ -222,10 +261,17 @@ def incident_pdf(a, rec):
     S.append(P('FMEA', H2))
     S.append(table([['Aspect', 'Risk %', 'S', 'O', 'D', 'RPN', 'Level']] + [[m['Failure Mode'], f"{m['Risk (%)']:.0f}", m['S'], m['O'], m['D'], m['RPN'], m['RPN Level']] for m in a['FMEA']],
                    [W * 0.34, W * 0.12, W * 0.08, W * 0.08, W * 0.08, W * 0.12, W * 0.18]))
-    so = fg.soe(a)
-    if len(so):
-        rows = [['Clock time' if 'Clock Time' in so else '#', 'ms', 'Source', 'Event']] + [[r.get('Clock Time', i + 1), f"{r['Time (ms)']:.1f}", r['Source'], r['Event']] for i, r in so.head(60).iterrows()]
-        S.append(P('Sequence of events', H2)); S.append(table(rows, [W * 0.25, W * 0.1, W * 0.15, W * 0.5]))
+    V_ = fg.end_views(a) if a.get('fault') else []
+    for st_, r_, x_ in (V_ if len(V_) > 1 else [(None, rec, a)]):
+        so = fg.soe(x_)
+        if len(so):
+            inc = float(x_.get('t_inception_ms') or 0)
+            rows = [['Clock time (record)' if 'Clock Time' in so else '#', 'ms from fault', 'Source', 'Event']] + \
+                   [[r.get('Clock Time', i + 1), f"{r['Time (ms)'] - inc:.1f}", r['Source'], r['Event']] for i, r in so.head(70).iterrows()]
+            S.append(P('Sequence of events' + (f' - {st_} end' if st_ else ''), H2))
+            S.append(P('Clock time as written by this record; ms counted from the fault inception in this record. Event lists of relays with another clock '
+                       'are placed on this record.', SMALL))
+            S.append(table(rows, [W * 0.24, W * 0.11, W * 0.15, W * 0.5]))
     S.append(PageBreak())
     S.append(P('Appendix: FMEA reference - how S, O, D and the risks are set', H2))
     S.append(P(fg.FMEA_BASIS, SMALL)); S.append(Spacer(1, 4))

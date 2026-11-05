@@ -1341,6 +1341,12 @@ def summary_auto(a):
     if a.get('likely_test'):
         return ('Likely a secondary injection test, not a system fault: ' + '; '.join(a['test_signs']) + '.' +
                 (f" Protection operated {a['operate_ms']:.0f} ms after the injection started." if a.get('operate_ms') is not None else ''))
+    try:
+        m_ = summary_multi(a)
+    except Exception:
+        m_ = None
+    if m_:
+        return m_
     loc = f"{a['loc_km']:.1f} km ({a['loc_pu'] * 100:.0f}% of the line)" if a.get('loc_km') is not None else 'not located'
     inc = a.get('t_inception_ms') or 0
     cl, oth = cleared_elements(a)
@@ -1898,6 +1904,10 @@ def analyze_incident(records, events=None, settings=None, line=None, setting=Non
         res.append((name, rec, a))
     if not res:
         raise ValueError('No disturbance record.')
+    per_end = {short_station(x_.get('station')): x_.get('settings_from') for _, _, x_ in res if x_.get('settings_from')}
+    if len(set(per_end.values())) > 1:
+        notes[:] = [n for n in notes if not n.startswith('Line data and settings taken from')]
+        notes.append('Line data and zone settings per line end: ' + '; '.join(f"{k} end from {v}" for k, v in per_end.items()) + '.')
     if setting.get('no_line_data'):
         for _, _, x_ in res:
             x_['loc_km'] = None; x_['loc_pu'] = None; x_['no_line_data'] = True
@@ -1925,6 +1935,7 @@ def analyze_incident(records, events=None, settings=None, line=None, setting=Non
     score = lambda x: (bool(x[2].get('fault')), not x[2].get('likely_test'),
                        sum(x[2]['channels'].get(k) is not None for k in ('IA', 'IB', 'IC', 'VA', 'VB', 'VC', 'IN')), len(x[1]['digital']))
     name, rec, a = max(res, key=score)
+    a['_rec_main'] = rec
     a['other_records'] = [(n, r_, x) for n, r_, x in res if x is not a and x.get('fault')]
     a['records'] = [record_summary(n, x) for n, _, x in res]
     a['settings_all'] = sts; a['settings_used'] = used
@@ -2397,7 +2408,10 @@ def fault_title(a):
     t = f"{TYPE_TEXT.get(a['type'], a['type'])} fault on {eq}"
     if a.get('loc_km') is not None:
         t += f", {a['loc_km']:.1f} km from {short_station(a.get('station')) or 'the local end'}"
-    if a.get('clearing_ms'):
+    ends_ = end_views(a)
+    if len(ends_) > 1 and all(x_.get('clearing_ms') for _, _, x_ in ends_):
+        t += f" - cleared from both ends in {max(x_['clearing_ms'] for _, _, x_ in ends_):.0f} ms"
+    elif a.get('clearing_ms'):
         t += f" - cleared in {a['clearing_ms']:.0f} ms"
     return t
 
@@ -2454,15 +2468,20 @@ def event_timeline(a, recs=None):
         for tm, nm, v in a_.get('binary', []):
             if v == 1 and not _re.search(r'unused|spare', nm, _re.I):
                 add(src, nm.strip(), tm * 1000 + shift)
-    E = a.get('events'); t0 = a.get('record_start')
-    if E is not None and t0 is not None and len(E):
-        for _, r in E.sort_values('Timestamp').iterrows():
-            ev = str(r['Event']).strip()
-            mm = _re.match(r'(.+?)\s+ON$', ev, _re.I)
-            if mm and not _re.search(r'virtual|output contacts|logic inputs|any start|any trip', mm.group(1), _re.I):
-                add(str(r['Device']), mm.group(1).strip(), (pd.Timestamp(r['Timestamp']) - pd.Timestamp(t0)).total_seconds() * 1000)
-    if a.get('t_interruption_ms') is not None:
-        items.append((a['t_interruption_ms'] - inc, 'Fault current interrupted (record)', '#1a9e5c', 'Cleared'))
+    many_ends = len({short_station(x_.get('station')) for _, _, x_ in ([('main', None, a)] + list(a.get('other_records') or []))}) > 1
+    for name_, rec_, a_ in [('main', None, a)] + (list(a.get('other_records') or []) if recs else []):
+        E = a_.get('events'); t0 = a_.get('record_start')
+        shift = inc - a_['t_inception_ms'] if a_ is not a and a_.get('t_inception_ms') is not None else 0.0
+        if E is not None and t0 is not None and len(E):
+            for _, r in E.sort_values('Timestamp').iterrows():
+                ev = str(r['Event']).strip()
+                mm = _re.match(r'(.+?)\s+ON$', ev, _re.I)
+                if mm and not _re.search(r'virtual|output contacts|logic inputs|any start|any trip', mm.group(1), _re.I):
+                    add(str(r['Device']), mm.group(1).strip(), (pd.Timestamp(r['Timestamp']) - pd.Timestamp(t0)).total_seconds() * 1000 + shift)
+        if a_.get('t_interruption_ms') is not None and (a_ is a or many_ends):
+            st_ = short_station(a_.get('station'))
+            items.append((a_['t_interruption_ms'] - a_['t_inception_ms'] if a_ is not a else a['t_interruption_ms'] - inc,
+                          f"Current interrupted ({st_ if many_ends and st_ else 'record'})", '#1a9e5c', 'Cleared'))
     if a.get('t_reclose_ms') is not None:
         items.append((a['t_reclose_ms'] - inc, 'Line re-energised (record)', '#0b2e59', 'Reclose'))
     return sorted(items, key=lambda x: x[0])
@@ -2474,15 +2493,16 @@ def timeline_fig(a, rec=None, width=10, height=4.4):
         return None
     tmax = max(x[0] for x in items)
     span = max(tmax, 20.0)
-    fig, ax = plt.subplots(figsize=(width, height))
+    many = len(items) > 10
+    fig, ax = plt.subplots(figsize=(width, height * (1.45 if many else 1)))
     x0, x1 = -0.06 * span, span * 1.06
-    ax.set_xlim(x0, x1 + (0.22 * span if a.get('restored') else 0)); ax.set_ylim(-5.6, 5.6); ax.axis('off')
+    ax.set_xlim(x0, x1 + (0.22 * span if a.get('restored') else 0)); ax.set_ylim(-(8.4 if many else 5.6), 8.4 if many else 5.6); ax.axis('off')
     ax.annotate('', xy=(x1, 0), xytext=(x0, 0), arrowprops=dict(arrowstyle='-|>', color='#333', lw=1.6))
     for v in np.linspace(0, span, 6):
         ax.plot([v, v], [-0.12, 0.12], color='#333', lw=1); ax.text(v, -0.32, f"{v:.0f} ms", ha='center', va='top', fontsize=7, color='#555')
-    lv = [0.8, -0.8, 2.3, -2.3, 3.8, -3.8]
+    lv = [0.8, -0.8, 2.3, -2.3, 3.8, -3.8] + ([5.3, -5.3, 6.8, -6.8] if many else [])
     last = {}
-    gap = 0.15 * (x1 - x0)
+    gap = 0.13 * (x1 - x0)
     for tm, lab, col, cat in items:
         free = [y for y in lv if y not in last or tm - last[y] >= gap]
         y = free[0] if free else min(lv, key=lambda y_: last[y_])
@@ -2604,3 +2624,113 @@ def main_reason(a):
             return lab
     first = (a.get('Reasons', {}).get(gov) or [''])[0]
     return first[:80].rstrip('.') or gov.lower()
+
+
+# ---------------------------------------------------------------- incident with several line ends
+TRIP_CMD = r'^(trip output [abc]|any trip|trip 3ph|trip [abc]$|general trip|cb\d? trip 3ph)'
+TRIP_ELEM = r'(zone ?\d+ ?[abcn]? ?trip|z\d trip|i>\d trip|in>\d trip|diff trip|i ?diff trip|aid(ed)? ?\d? ?dist trip|aid \d def trip|dist trip|def trip|sotf trip|intertrip)'
+START_SIG = r'^(any start|started phase [abc]|.*start$)'
+
+
+def end_views(a):
+    """Every line end of the incident (one record per station): (station, record, analysis)."""
+    seen, out = set(), []
+    main = (a.get('_rec_main'), a)
+    for r_, x_ in [main] + [(r2, a2) for _, r2, a2 in (a.get('other_records') or [])]:
+        st = short_station(x_.get('station')) or '?'
+        if st in seen or not x_.get('fault'):
+            continue
+        seen.add(st); out.append((st, r_, x_))
+    return out
+
+
+def protection_by_relay(a):
+    """Per relay at every line end: when it started, when it gave the trip command, the elements that operated (ms from the
+    fault inception at that end, read from its record channels or from its aligned event list), and when the current stopped."""
+    rows = []
+    for st, r_, x_ in end_views(a):
+        if r_ is None:
+            continue
+        inc = float(x_.get('t_inception_ms') or 0)
+        t, t0, t1 = _window(r_, x_)
+        brs, _ = binary_rows(r_, x_, t0, t1, max_rows=200, own_only=True)
+        devs = {}
+        for nm, src, iv in brs:
+            dev = src.split(' ')[0] if ' ' in src else src
+            first = min(s_ for s_, _ in iv) - inc
+            if first < -5:
+                continue
+            d = devs.setdefault(dev, {'src': 'record' if src == (x_.get('record_device') or '') else 'event list (aligned)', 'start': None, 'trip': None, 'el': {}})
+            n_ = nm.strip()
+            if re.search(START_SIG, n_, re.I):
+                d['start'] = first if d['start'] is None else min(d['start'], first)
+            if re.search(TRIP_CMD, n_, re.I):
+                d['trip'] = first if d['trip'] is None else min(d['trip'], first)
+            elif re.search(TRIP_ELEM, n_, re.I) and not re.search(r'mem|ar\b|start', n_, re.I):
+                key = re.sub(r'\s+[abcn](?=\s+trip)', '', re.sub(r'\s+[abcn]$', '', n_, flags=re.I), flags=re.I)
+                d['el'][key] = min(d['el'].get(key, 1e9), first)
+        # the record's own relay: its starts and elements from its event list too
+        E_ = x_.get('events'); t0r = x_.get('record_start'); rd = x_.get('record_device') or ''
+        if E_ is not None and t0r is not None and rd and 'Device' in E_:
+            dev = rd.split(' ')[0]
+            d = devs.setdefault(dev, {'src': 'record', 'start': None, 'trip': None, 'el': {}})
+            for _, e in E_[E_['Device'] == rd].iterrows():
+                mm = re.match(r'(.+?)\s+ON$', str(e['Event']).strip(), re.I)
+                if not mm:
+                    continue
+                n_ = mm.group(1).strip()
+                tm = (pd.Timestamp(e['Timestamp']) - pd.Timestamp(t0r)).total_seconds() * 1000 - inc
+                if tm < -5 or tm > 2000:
+                    continue
+                if re.search(START_SIG, n_, re.I):
+                    d['start'] = tm if d['start'] is None else min(d['start'], tm)
+                elif re.search(TRIP_ELEM, n_, re.I) and not re.search(r'mem|ar\b|start', n_, re.I):
+                    key = re.sub(r'\s+[abcn](?=\s+trip)', '', re.sub(r'\s+[abcn]$', '', n_, flags=re.I), flags=re.I)
+                    d['el'][key] = min(d['el'].get(key, 1e9), tm)
+        intr = x_.get('t_interruption_ms')
+        for dev, d in devs.items():
+            if d['trip'] is None and not d['el']:
+                continue
+            rep = (a.get('relay_reports') or {}).get(f'{dev} {st}', {})
+            rows.append({'Line end': st, 'Relay': dev, 'From': d['src'], 'Started (ms)': None if d['start'] is None else round(d['start'], 1),
+                         'Trip command (ms)': None if d['trip'] is None else round(d['trip'], 1),
+                         'Elements (ms)': ', '.join(f"{k} {v:.0f}" for k, v in sorted(d['el'].items(), key=lambda kv: kv[1])) or '-',
+                         'Relay fault record': rep.get('Relay Trip Elements', '-'),
+                         'Current interrupted (ms)': None if intr is None else round(intr - inc, 1)})
+    return pd.DataFrame(rows)
+
+
+def summary_multi(a):
+    """Summary of an incident recorded at both line ends: what happened at each end, then the overall result."""
+    V = end_views(a)
+    if len(V) < 2:
+        return None
+    PR = protection_by_relay(a)
+    eq = (a.get('meta') or {}).get('Line') or 'the line'
+    A_ = V[0][0]
+    txt = f"{TYPE_TEXT.get(a['type'], a['type'])} fault on {eq}"
+    if a.get('loc_km') is not None:
+        txt += (f", {a['loc_km']:.1f} km from {A_} ({a['loc_pu'] * 100:.0f}% of the line)" +
+                (', located from both ends' if a.get('loc_method') == 'two-ended' else ''))
+    txt += '. '
+    clr = []
+    for st, r_, x_ in V:
+        p = PR[PR['Line end'] == st] if len(PR) else PR
+        part = f"{st} end: {x_['I_fault_max_kA']:.2f} kA"
+        if len(p) and p['Trip command (ms)'].notna().any():
+            f_ = p.loc[p['Trip command (ms)'].idxmin()]
+            part += f"; first trip command {f_['Trip command (ms)']:.0f} ms by {f_['Relay']}"
+            if f_['Elements (ms)'] != '-':
+                part += f" ({f_['Elements (ms)'].split(',')[0].rsplit(' ', 1)[0]})"
+            others = [f"{q['Relay']} {q['Trip command (ms)']:.0f} ms" for _, q in p.iterrows() if q['Relay'] != f_['Relay'] and pd.notna(q['Trip command (ms)'])]
+            if others:
+                part += '; also ' + ', '.join(others)
+        if x_.get('clearing_ms') is not None:
+            part += f"; current interrupted at {x_['clearing_ms']:.0f} ms"
+            clr.append(x_['clearing_ms'])
+        txt += part + '. '
+    if len(clr) == len(V):
+        txt += f"Fault cleared from both ends in {max(clr):.0f} ms. "
+    if a.get('ar'):
+        txt += f"Auto-reclose: {a['ar'].lower()}."
+    return txt.strip()
