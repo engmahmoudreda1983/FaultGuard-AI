@@ -1981,6 +1981,13 @@ def analyze_incident(records, events=None, settings=None, line=None, setting=Non
     a['end_records'] = st_
     a['end_list'] = [e['station'] for e in st_] + [s for s in sorted({v.get('Station') for v in (a.get('relay_reports') or {}).values() if v.get('Station')})
                                                      if s not in [e['station'] for e in st_]]
+    try:
+        T_ = source_tables(a)
+        if T_ is not None:
+            r_ = T_['summary'].iloc[1]
+            a['loc_report_km'] = float(r_['Average']); a['loc_report_spread'] = str(r_['Spread']).replace('+/-', '±')
+    except (ValueError, KeyError, IndexError, TypeError):
+        pass
     # differences between the records of the same incident
     types = {x['Fault Type'] for x in a['records'] if x['Fault Type'] not in ('No fault',)}
     if len(types) > 1:
@@ -2099,57 +2106,38 @@ def _bolt(ax, x, y, h, w, color='#d62728'):
     ax.add_patch(_Poly(pts, closed=True, fc=color, ec='#7a0000', lw=0.8, zorder=6))
 
 
-def line_fig(a, width=10, height=3.3):
-    """Single-line view: station A -- line -- station B, fault bolt at the located distance, zone reaches, relay estimates."""
-    L = a['line']['length_km']; st = a['setting']
+def line_fig(a, width=10, height=2.9):
+    """The line between its two stations with the fault: the distance from each end (above: from the first station, below: from
+    the second). For an incident recorded at both ends the location is the average of FaultGuard AI and the relays."""
+    L = a['line']['length_km']
     A_, B_ = stations(a)
-    loc = a.get('loc_km')
-    xmax = max(L * 1.12, (loc or 0) * 1.06)
+    a_s, b_s = short_station(A_) or A_, short_station(B_) or B_
+    loc = a.get('loc_report_km', a.get('loc_km'))
     fig, ax = plt.subplots(figsize=(width, height))
-    ax.set_xlim(-0.12 * L, xmax); ax.set_ylim(-2.6, 2.4); ax.axis('off')
+    ax.set_xlim(-0.16 * L, L * 1.16); ax.set_ylim(-2.0, 2.3); ax.axis('off')
     ax.plot([0, L], [0, 0], color='#3b3b3b', lw=4, solid_capstyle='butt', zorder=2)
-    if loc is not None and loc > L:
-        ax.plot([L, loc * 1.03], [0, 0], color='#9a9a9a', lw=2.5, ls='--', zorder=2)
-        ax.text((L + loc) / 2, 0.25, 'adjacent line', ha='center', fontsize=7.5, color='#777')
     for x, name, ha in ((0, A_, 'right'), (L, B_, 'left')):
-        ax.plot([x, x], [-0.75, 0.75], color='#0b2e59', lw=7, solid_capstyle='butt', zorder=3)
-        ax.add_patch(_Box((x - 0.012 * L, -0.11), 0.024 * L, 0.22, boxstyle='square,pad=0', fc='white', ec='#0b2e59', lw=1.2, zorder=4))
-        ax.text(x + (-0.02 * L if ha == 'right' else 0.02 * L), 0.95, name, ha=ha, va='bottom', fontsize=11, fontweight='bold', color='#0b2e59')
-    ax.text(0, -0.95, 'relay', ha='center', va='top', fontsize=7, color='#555')
-    # zone reaches under the line
-    for i, (k, lab, col) in enumerate([('z1_reach', 'Zone 1', '#d62728'), ('z2_reach', 'Zone 2', '#e3a400')]):
-        r = st.get(k)
-        if r:
-            y = -1.45 - 0.45 * i
-            ax.annotate('', xy=(min(r * L, xmax * 0.995), y), xytext=(0, y), arrowprops=dict(arrowstyle='-|>', color=col, lw=2.2))
-            ax.text(min(r * L, xmax * 0.995), y + 0.08, f" {lab} {r * 100:.0f}%", va='bottom', ha='right' if r * L > xmax * 0.9 else 'left',
-                    fontsize=8, color=col, fontweight='bold')
-    # relay estimates
-    reps = a.get('relay_reports') or {}
-    k = 0
-    for dev, v in reps.items():
-        m_ = _re.match(r'(-?\d+(?:\.\d+)?)\s*km', str(v.get('Relay Fault Location', '')))
-        if m_:
-            x0 = float(m_.group(1))
-            far = bool(v.get('Station')) and bool(a.get('station_short')) and v['Station'] != a['station_short']
-            x = L - x0 if far else x0                       # the relay at the other end measures from its own end
-            lab = f"{dev} {x0:.1f} km" + (f" (from {v['Station']})" if far else '')
-            ax.plot(x, -0.32, marker='^', ms=9, color='#7b3fbf' if far else '#1f5fbf', zorder=5)
-            ax.text(x, -0.55 - 0.34 * (k % 2), lab, ha='right' if x > 0.9 * L else ('left' if x < 0.1 * L else 'center'), va='top', fontsize=7.5,
-                    color='#7b3fbf' if far else '#1f5fbf')
-            k += 1
-    if a.get('loc_two_ended_km') is not None:
-        x = a['loc_two_ended_km']; ax.plot(x, 0.32, marker='v', ms=9, color='#1a9e5c', zorder=5)
-    if loc is not None:
-        _bolt(ax, loc, 0.12, 1.25, 0.05 * L)
-        typ = a.get('type', '')
-        ax.text(loc, 1.48, f"{typ} fault\n{loc:.1f} km ({loc / L * 100:.0f}%)", ha='center', va='bottom', fontsize=9.5, fontweight='bold', color='#d62728',
+        ax.plot([x, x], [-0.7, 0.7], color='#0b2e59', lw=7, solid_capstyle='butt', zorder=3)
+        ax.text(x + (-0.025 * L if ha == 'right' else 0.025 * L), 0, name, ha=ha, va='center', fontsize=11, fontweight='bold', color='#0b2e59')
+    if loc is not None and 0 <= loc <= L:
+        _bolt(ax, loc, 0.05, 1.05, 0.06 * L)
+        ax.text(loc, 1.3, f"{a.get('type', '')} fault", ha='center', va='bottom', fontsize=10, fontweight='bold', color='#d62728',
                 bbox=dict(boxstyle='round,pad=0.3', fc='white', ec='#d62728', lw=1))
-        if loc <= L:
-            ax.text(loc / 2, 0.2, f"{loc:.1f} km", ha='center', va='bottom', fontsize=8.5, color='#333')
-            if L - loc > 0.06 * L:
-                ax.text((loc + L) / 2, 0.2, f"{L - loc:.1f} km", ha='center', va='bottom', fontsize=8.5, color='#333')
-    ax.text(L / 2, -0.42 if not reps else 2.25, f"Line length {L:.1f} km", ha='center', fontsize=8, color='#666')
+        # distance from the first station, above the line
+        ax.annotate('', xy=(loc, 0.45), xytext=(0, 0.45), arrowprops=dict(arrowstyle='<->', color='#0b2e59', lw=1.4))
+        ax.text(loc / 2, 0.55, f"{loc:.1f} km from {a_s}", ha='center', va='bottom', fontsize=10, fontweight='bold', color='#0b2e59')
+        # distance from the second station, below the line
+        ax.annotate('', xy=(loc, -0.45), xytext=(L, -0.45), arrowprops=dict(arrowstyle='<->', color='#0b2e59', lw=1.4))
+        ax.text((loc + L) / 2, -0.55, f"{L - loc:.1f} km from {b_s}", ha='center', va='top', fontsize=10, fontweight='bold', color='#0b2e59')
+        ax.plot([loc, loc], [-0.6, 0.6], color='#d62728', lw=1, ls=':', zorder=1)
+    elif loc is not None:
+        ax.text(L / 2, 0.6, f"Fault located {loc:.1f} km from {A_}, outside the line length", ha='center', fontsize=10, color='#d62728', fontweight='bold')
+    else:
+        ax.text(L / 2, 0.6, 'Fault location not known', ha='center', fontsize=10, color='#666')
+    sub = f"Line length {L:.1f} km"
+    if a.get('loc_report_km') is not None:
+        sub += f"  -  location = average of FaultGuard AI and the relays ({a.get('loc_report_spread', '')})"
+    ax.text(L / 2, -1.55, sub, ha='center', va='top', fontsize=8, color='#666')
     fig.tight_layout()
     return fig
 
@@ -2406,8 +2394,9 @@ def fault_title(a):
         return 'Secondary injection test record'
     eq = (a.get('meta') or {}).get('Line') or 'the line'
     t = f"{TYPE_TEXT.get(a['type'], a['type'])} fault on {eq}"
-    if a.get('loc_km') is not None:
-        t += f", {a['loc_km']:.1f} km from {short_station(a.get('station')) or 'the local end'}"
+    lk = a.get('loc_report_km', a.get('loc_km'))
+    if lk is not None:
+        t += f", {lk:.1f} km from {short_station(a.get('station')) or 'the local end'}"
     ends_ = end_views(a)
     if len(ends_) > 1 and all(x_.get('clearing_ms') for _, _, x_ in ends_):
         t += f" - cleared from both ends in {max(x_['clearing_ms'] for _, _, x_ in ends_):.0f} ms"
@@ -2709,7 +2698,11 @@ def summary_multi(a):
     eq = (a.get('meta') or {}).get('Line') or 'the line'
     A_ = V[0][0]
     txt = f"{TYPE_TEXT.get(a['type'], a['type'])} fault on {eq}"
-    if a.get('loc_km') is not None:
+    if a.get('loc_report_km') is not None:
+        lk = a['loc_report_km']
+        txt += (f", {lk:.1f} km from {A_} and {a['line']['length_km'] - lk:.1f} km from {V[1][0]} (average of FaultGuard AI and the relays, "
+                f"{a.get('loc_report_spread', '')})")
+    elif a.get('loc_km') is not None:
         txt += (f", {a['loc_km']:.1f} km from {A_} ({a['loc_pu'] * 100:.0f}% of the line)" +
                 (', located from both ends' if a.get('loc_method') == 'two-ended' else ''))
     txt += '. '

@@ -94,7 +94,7 @@ def trip_html(a, rec):
     data = {'title': eq, 'incident': meta.get('Incident', ''), 'date': meta.get('Date', ''), 'relays': meta.get('Relay', ''),
             'status': a.get('Status'), 'slab': SLAB.get(a.get('Status'), a.get('Status')), 'scol': SCOL.get(a.get('Status'), '#555'),
             'headline': fg.fault_title(a), 'risk': fg.risk_title(a, SLAB.get(a.get('Status'), '')), 'risknote': fg.risk_note(a), 'summary': fg.summary_text(a), 'type': str(a.get('type')),
-            'typetext': fg.TYPE_TEXT.get(a.get('type'), ''), 'L': L, 'loc': a.get('loc_km'), 'locm': a.get('loc_method') or 'single-ended',
+            'typetext': fg.TYPE_TEXT.get(a.get('type'), ''), 'L': L, 'loc': a.get('loc_report_km', a.get('loc_km')), 'locm': a.get('loc_method') or 'single-ended',
             'ends': ends, 'recs': recs, 'lineRecs': line_recs, 'remoteI': remote_i, 'noLine': bool(a.get('no_line_data'))}
     TS = fg.source_tables(a)
     tables = ''
