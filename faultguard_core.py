@@ -2251,6 +2251,9 @@ def rx_ends(a, rec=None):
         if mm.get('End A') and mm.get('End B') and st_ and short_station(mm['End A']) != st_ and short_station(mm['End B']) == st_:
             mm['End A'], mm['End B'] = mm['End B'], mm['End A']          # the relay's own station first
         xx['meta'] = mm
+        rep = a.get('loc_report_km'); L = a['line']['length_km']; ref = short_station(a.get('station'))
+        if rep is not None and len(end_views(a)) > 1:
+            xx['loc_true_km'] = rep if st_ == ref else L - rep
         dev = (x_.get('record_device') or '').split(' ')[0] or 'relay'
         out.append({'station': st_, 'dev': dev, 'sdev': x_.get('settings_dev') or dev, 'remote': short_station(mm.get('End B')) or 'the remote end',
                     'a': xx, 'zone_seen': x_.get('zone_seen')})
@@ -2293,11 +2296,19 @@ def rx_fig(a, width=7.2, height=6.4):
         zs = a.get('zone_seen')
         ztxt = 'outside all zones' if zs == 0 else (f"inside Zone {zs}" if zs else '')
         ax.plot(za.real, za.imag, marker='*', ms=20, color='#d62728', mec='#7a0000', zorder=7)
-        ax.annotate(f"Fault point\nR {za.real:.1f} Ω, X {za.imag:.1f} Ω\n{ztxt}", xy=(za.real, za.imag),
+        km_seen = za.imag / Z.imag * line['length_km'] if Z.imag > 0 else None
+        ax.annotate(f"Seen by the relay\nR {za.real:.1f} Ω, X {za.imag:.1f} Ω" + (f" (≈ {km_seen:.0f} km)" if km_seen else '') + f"\n{ztxt}", xy=(za.real, za.imag),
                     xytext=(za.real - 0.32 * lim, za.imag + 0.18 * lim), fontsize=8.8, fontweight='bold', color='#d62728',
                     arrowprops=dict(arrowstyle='->', color='#d62728', lw=1.2), bbox=dict(boxstyle='round,pad=0.35', fc='white', ec='#d62728'), zorder=8)
+    dk = a.get('loc_true_km')
+    if dk is not None and 0 <= dk <= line['length_km'] * 1.02:      # the real location (both ends combined) on the line
+        zt = Z * dk / line['length_km']
+        ax.plot(zt.real, zt.imag, marker='D', ms=10, color='#1a9e5c', mec='#0b5a33', zorder=7, label=f'Actual fault location ({dk:.1f} km)')
+        ax.annotate(f"Actual fault location\n{dk:.1f} km from {A_}\n(both line ends)", xy=(zt.real, zt.imag),
+                    xytext=(zt.real + 0.25 * lim, zt.imag - 0.22 * lim), fontsize=8.6, fontweight='bold', color='#1a9e5c',
+                    arrowprops=dict(arrowstyle='->', color='#1a9e5c', lw=1.2), bbox=dict(boxstyle='round,pad=0.3', fc='white', ec='#1a9e5c'), zorder=8)
     ax.axhline(0, color='#999', lw=0.8); ax.axvline(0, color='#999', lw=0.8)
-    ax.legend(loc='lower right', fontsize=7.5, framealpha=0.95)
+    ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.11), ncol=3, fontsize=7.5, framealpha=0.95)
     ax.set_xlim(-0.55 * lim, lim); ax.set_ylim(-0.3 * lim, 1.1 * lim); ax.set_aspect('equal')
     kind = shapes[0][4] if shapes else 'mho'
     src_ = 'from the relay settings' if (a.get('settings_used') or a.get('settings_from')) else 'as entered'

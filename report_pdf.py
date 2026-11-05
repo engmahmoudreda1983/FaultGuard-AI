@@ -191,8 +191,12 @@ def incident_pdf(a, rec):
             S.append(fig_image(rx_fig(v_['a']), W * 0.92))
             zs = v_['zone_seen']
             if zs is not None:
-                S.append(P('The star marks the impedance one cycle into the fault; the blue dots show its path from the load point into the fault. '
-                           + ('It lies outside every zone.' if zs == 0 else f"It lies inside zone {zs}."), SMALL))
+                S.append(P('The red star is the impedance the relay measured one cycle into the fault; the blue dots show its path from the load '
+                           'point into the fault. ' + ('It lies outside every zone.' if zs == 0 else f"It lies inside zone {zs}.")
+                           + (f" The green diamond is the actual fault location found from both line ends ({v_['a']['loc_true_km']:.1f} km from {st_}). "
+                              "Measured from one end alone, the fault resistance carries the current of the other end as well, so the relay sees the fault "
+                              "farther away than it is; the weaker the end, the larger the difference." if v_['a'].get('loc_true_km') is not None else ''),
+                           BODY))
     else:
         for n in a.get('notes', []):
             S.append(P(n))
