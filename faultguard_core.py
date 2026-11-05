@@ -1874,6 +1874,9 @@ def analyze_incident(records, events=None, settings=None, line=None, setting=Non
                 best = (k, dev)
         if best[1]:
             x_['record_device'] = best[1]
+    with_rec = {x_.get('record_device') for _, _, x_ in res if x_.get('record_device')}
+    for _, _, x_ in res:
+        x_['devices_with_records'] = sorted(with_rec)
     score = lambda x: (bool(x[2].get('fault')), not x[2].get('likely_test'),
                        sum(x[2]['channels'].get(k) is not None for k in ('IA', 'IB', 'IC', 'VA', 'VB', 'VC', 'IN')), len(x[1]['digital']))
     name, rec, a = max(res, key=score)
@@ -2315,6 +2318,8 @@ def binary_rows(rec, a, t0, t1, max_rows=22, own_only=False):
                 continue
             if own_only and own_st and not dev.endswith(' ' + own_st):
                 continue
+            if own_only and dev in (a.get('devices_with_records') or []):
+                continue                      # that relay has its own record and its own page
             state, n_ = {}, 0
             for _, r in Ed.sort_values('Timestamp').iterrows():
                 ev = str(r['Event']).strip()
