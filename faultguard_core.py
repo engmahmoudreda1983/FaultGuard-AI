@@ -2727,3 +2727,45 @@ def summary_multi(a):
     if a.get('ar'):
         txt += f"Auto-reclose: {a['ar'].lower()}."
     return txt.strip()
+
+
+def location_explanation(a):
+    """How the fault location was found for an incident recorded at both ends: (table rows, explanation lines). None otherwise."""
+    V = end_views(a)
+    if len(V) < 2 or a.get('loc_two_ended_km') is None:
+        return None
+    L = a['line']['length_km']
+    (sa, _, xa), (sb, _, xb) = V[0], V[1]
+    la = xa.get('loc_single_km', xa.get('loc_km')) if xa is a else xa.get('loc_km')
+    lb = xb.get('loc_km')
+    reps = a.get('relay_reports') or {}
+    rows = [['Source', f'{sa} end alone (from {sa})', f'{sb} end alone (from {sb})', f'Same, from {sa}', 'Both ends (from ' + sa + ')']]
+    fmt = lambda v: '-' if v is None else f"{v:.1f} km"
+    rows.append(['FaultGuard AI (records)', fmt(la), fmt(lb), fmt(None if lb is None else L - lb), fmt(a['loc_two_ended_km'])])
+    pairs = []
+    for ty in sorted({d.split(' ')[0] for d in reps if ' ' in d}):
+        va = _num((reps.get(f'{ty} {sa}') or {}).get('Relay Fault Location'))
+        vb = _num((reps.get(f'{ty} {sb}') or {}).get('Relay Fault Location'))
+        avg = np.mean([x for x in (va, None if vb is None else L - vb) if x is not None]) if (va is not None or vb is not None) else None
+        rows.append([f'{ty} (relay fault records)', fmt(va), fmt(vb), fmt(None if vb is None else L - vb), f"{fmt(avg)} (average of the two ends)"])
+        pairs.append((ty, avg))
+    ia, ib = xa.get('I_fault_max_kA'), xb.get('I_fault_max_kA')
+    weak = sa if (ia or 0) < (ib or 0) else sb
+    tot = (la or 0) + (lb or 0)
+    txt = [
+        f"1. Each end alone. Every relay, and FaultGuard on each record, measures the distance from its own station using only the voltage and current "
+        f"at that station and the line impedance. {sa} put the fault at {fmt(la)} from {sa}; {sb} put it at {fmt(lb)} from {sb}, which is "
+        f"{fmt(None if lb is None else L - lb)} from {sa}.",
+        f"2. Why the two ends do not agree. If both were exact, the two distances would add up to the line length ({L:.1f} km); here they add up to "
+        f"{tot:.0f} km. The fault had some resistance (arc or contact), and the current coming from the other end also flows through it, so each end "
+        f"sees the fault farther away than it is. The weaker end, {weak} ({min(ia or 0, ib or 0):.2f} kA against {max(ia or 0, ib or 0):.2f} kA), is the most affected.",
+        f"3. FaultGuard AI from both ends. FaultGuard takes the {sa} and {sb} records together and uses the negative-sequence voltage and current of "
+        f"both ends: the distance m is the point where the voltage calculated from {sa} equals the voltage calculated from {sb}, "
+        f"|V2({sa}) - m·Z·I2({sa})| = |V2({sb}) - (1 - m)·Z·I2({sb})|. This is not affected by the fault resistance or the infeed and does not need "
+        f"the two records to be time-synchronised. Result: {a['loc_two_ended_km']:.1f} km from {sa} ({L - a['loc_two_ended_km']:.1f} km from {sb}).",
+    ]
+    if a.get('loc_report_km') is not None:
+        parts = [f"FaultGuard AI {a['loc_two_ended_km']:.1f} km"] + [f"{t} {v:.1f} km" for t, v in pairs if v is not None]
+        txt.append(f"4. Reported location: the average of the sources ({', '.join(parts)}) = {a['loc_report_km']:.1f} km from {sa} "
+                   f"({L - a['loc_report_km']:.1f} km from {sb}), spread {a.get('loc_report_spread', '')}. The exact point is confirmed by the line patrol.")
+    return rows, txt

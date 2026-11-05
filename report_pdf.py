@@ -119,6 +119,13 @@ def incident_pdf(a, rec):
     if a.get('fault') and is_line and not a.get('no_line_data'):
         S.append(P('Fault location on the line', H2))
         S.append(fig_image(line_fig(a)))
+        LE = fg.location_explanation(a)
+        if LE:
+            rows_, txt_ = LE
+            S.append(P('How the fault location was found', H3))
+            S.append(table(rows_, [W * 0.24, W * 0.18, W * 0.18, W * 0.16, W * 0.24]))
+            for t_ in txt_:
+                S.append(P(t_, SMALL))
     two_ends = len(fg.end_views(a)) > 1 if a.get('fault') else False
     if a.get('fault'):
         tl = fg.timeline_fig(a, rec)
