@@ -150,13 +150,15 @@ def status_key(a):
 
 def to_record(a, source):
     m = a.get('meta', {})
-    loc = f"{a['loc_km']:.1f} km ({a['loc_pu'] * 100:.0f}%)" if a.get('loc_km') is not None else '-'
+    lk = a.get('loc_report_km') if a.get('loc_report_km') is not None else a.get('loc_km')       # the reported location
+    L_ = (a.get('line') or {}).get('length_km')
+    loc = f"{lk:.1f} km ({lk / L_ * 100:.0f}%)" if lk is not None and L_ else '-'
     f1 = lambda v: round(float(v), 1) if v is not None else None
     return {'Incident': m.get('Incident') or '-', 'Date': m.get('Date') or (str(a.get('record_start'))[:19] if a.get('record_start') else '-'),
             'Station': m.get('Station') or '-', 'Line': m.get('Line') or '-', 'Relay': m.get('Relay') or '-',
             'Fault Type': a.get('type', '-') if a.get('fault') else 'None', 'Fault Description': fg.TYPE_TEXT.get(a.get('type'), '-') if a.get('fault') else 'No fault',
             'AI Confidence (%)': round(a.get('type_conf', 0) * 100) if a.get('fault') else None, 'Classic Type': a.get('type_rule', '-'),
-            'Location': loc, 'Location (km)': f1(a.get('loc_km')), 'Location (%)': round(a['loc_pu'] * 100) if a.get('loc_pu') is not None else None,
+            'Location': loc, 'Location (km)': f1(lk), 'Location (%)': round(lk / L_ * 100) if lk is not None and L_ else None,
             'Fault Current (kA)': f1(a.get('I_fault_max_kA')), 'Lowest Voltage (%)': round(a['V_min_pu'] * 100) if a.get('V_min_pu') is not None else None,
             'Protection': ', '.join(e[1] for e in a.get('elements', [])) or '-', 'Operate (ms)': f1(a.get('operate_ms')),
             'Breaker (ms)': f1(a.get('breaker_ms')), 'Clearing (ms)': f1(a.get('clearing_ms')), 'Auto-Reclose': a.get('ar', '-'),
@@ -631,8 +633,10 @@ def show_incident(a, rec):
         return
     k = st.columns(6)
     k[0].metric("Fault type", a['type'], f"AI {a['type_conf'] * 100:.0f}%", delta_arrow='off', delta_color='off')
-    k[1].metric("Location", f"{a['loc_km']:.1f} km" if a.get('loc_km') is not None else '-',
-                f"{a['loc_pu'] * 100:.0f}% of line" if a.get('loc_pu') is not None else None, delta_arrow='off', delta_color='off')
+    lk = a.get('loc_report_km') if a.get('loc_report_km') is not None else a.get('loc_km')      # the reported location (average of the sources)
+    k[1].metric("Location", f"{lk:.1f} km" if lk is not None else '-',
+                (f"{lk / a['line']['length_km'] * 100:.0f}% of line" + (' (average)' if a.get('loc_report_km') is not None else ''))
+                if lk is not None and a.get('line', {}).get('length_km') else None, delta_arrow='off', delta_color='off')
     k[2].metric("Fault current", f"{a['I_fault_max_kA']:.2f} kA", f"peak {a['I_peak_kA']:.1f} kA", delta_arrow='off', delta_color='off')
     f0 = lambda v: '-' if v is None else f"{v:.0f} ms"
     k[3].metric("Relay operate", f0(a.get('operate_ms')), ', '.join(e[1] for e in a['elements'])[:28] or None, delta_arrow='off', delta_color='off')
@@ -692,12 +696,12 @@ def show_incident(a, rec):
     st.dataframe(so, hide_index=True, width=STRETCH, height=min(420, 38 + 35 * len(so)))
     stem = fg.file_stem(a)                               # named after the fault: stations, line, fault type, date
     d = st.columns(4)
-    d[0].download_button("📄 Download Incident Report (PDF)", pdfrep.incident_pdf(a, rec), f"FaultGuard_{stem}.pdf", 'application/pdf', key='fp_pdf')
-    d[3].download_button("🎬 Dynamic report (HTML)", trip_html.trip_html(a, rec).encode('utf-8'), f"FaultGuard_{stem}_dynamic.html", 'text/html', key='fp_html',
+    d[0].download_button("📄 Download Incident Report (PDF)", pdfrep.incident_pdf(a, rec), f"FaultGuard_{stem}.pdf", 'application/pdf', key='fp_pdf', on_click='ignore')
+    d[3].download_button("🎬 Dynamic report (HTML)", trip_html.trip_html(a, rec).encode('utf-8'), f"FaultGuard_{stem}_dynamic.html", 'text/html', key='fp_html', on_click='ignore',
                          help='Replays the records of every line end: waveforms with a moving cursor, currents and voltages, phasors, breakers and events. Opens in any browser, no internet needed.')
-    d[1].download_button("📥 Sequence of events (CSV)", so.to_csv(index=False).encode('utf-8-sig'), f"FaultGuard_{stem}_SOE.csv", 'text/csv', key='fp_soe')
+    d[1].download_button("📥 Sequence of events (CSV)", so.to_csv(index=False).encode('utf-8-sig'), f"FaultGuard_{stem}_SOE.csv", 'text/csv', key='fp_soe', on_click='ignore')
     summ = pd.DataFrame([{k: v for k, v in to_record(a, '').items() if k not in ('Mode Risks', 'FMEA', 'Findings', 'Source', 'Analyzed')}])
-    d[2].download_button("📥 Incident summary (CSV)", summ.to_csv(index=False).encode('utf-8-sig'), f"FaultGuard_{stem}_summary.csv", 'text/csv', key='fp_sum')
+    d[2].download_button("📥 Incident summary (CSV)", summ.to_csv(index=False).encode('utf-8-sig'), f"FaultGuard_{stem}_summary.csv", 'text/csv', key='fp_sum', on_click='ignore')
 
 
 # ==========================================
