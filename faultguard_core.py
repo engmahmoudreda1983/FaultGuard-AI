@@ -2371,6 +2371,21 @@ def binary_rows(rec, a, t0, t1, max_rows=22, own_only=False):
 
 
 
+def fault_title(a):
+    """Heading for the incident: what happened, where and how fast it was cleared (no risk wording)."""
+    if not a.get('fault'):
+        return 'No fault in the record'
+    if a.get('likely_test'):
+        return 'Secondary injection test record'
+    eq = (a.get('meta') or {}).get('Line') or 'the line'
+    t = f"{TYPE_TEXT.get(a['type'], a['type'])} fault on {eq}"
+    if a.get('loc_km') is not None:
+        t += f", {a['loc_km']:.1f} km from {short_station(a.get('station')) or 'the local end'}"
+    if a.get('clearing_ms'):
+        t += f" - cleared in {a['clearing_ms']:.0f} ms"
+    return t
+
+
 def risk_title(a, lab):
     """Banner title that says where the incident risk comes from (the FMEA failure modes)."""
     if a.get('Overall Risk (%)', 0) <= 0:

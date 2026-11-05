@@ -606,8 +606,7 @@ def show_incident(a, rec):
         if a.get('likely_test'):
             banner(STATUS_LABEL['TEST'], fg.summary_text(a), col)
         else:
-            banner(fg.risk_title(a, STATUS_LABEL[sk]), fg.summary_text(a), col)
-            st.caption(fg.risk_note(a))
+            banner(fg.fault_title(a), fg.summary_text(a), '#0b2e59')
     st.caption(f"Record: {rec['format']}, {len(rec['analog'])} analog / {len(rec['digital'])} binary channels, "
                f"{(rec['t'][-1] - rec['t'][0]) * 1000:.0f} ms, {1 / np.median(np.diff(rec['t'])):.0f} samples/s"
                + (f" · event list: {len(a['events'])} events" if a.get('events') is not None else " · no event list"))
@@ -663,6 +662,9 @@ def show_incident(a, rec):
         st.markdown("#### Measured values (primary)")
         st.dataframe(measured_table(a), hide_index=True, width=STRETCH)
     st.markdown("#### Assessment")
+    if not a.get('likely_test'):
+        st.markdown(f"<div style='color:{col};font-weight:700;font-size:1.05rem'>{fg.risk_title(a, STATUS_LABEL[sk])}</div>", unsafe_allow_html=True)
+        st.caption(fg.risk_note(a))
     for t in fg.findings(a):
         st.markdown(f"- {t}")
     (st.info if a.get('likely_test') else st.warning if a['Status'] != 'EXCELLENT' else st.success)(f"**Action:** {a['Action']}")

@@ -115,10 +115,7 @@ def incident_pdf(a, rec):
     buf, doc, deco = _doc(f"Trip Report - {eq}")
     S = [P('Trip Report', H1), Paragraph(f"<font size='13' color='#0b2e59'><b>{clean(eq)}</b></font>", BODY), Spacer(1, 3),
          P(f"Incident {meta.get('Incident', '')}  -  {meta.get('Date', '')}  -  relays: {meta.get('Relay', '')}", SMALL), Spacer(1, 4)]
-    title = 'TEST RECORD' if a.get('likely_test') else fg.risk_title(a, SLAB[a['Status']])
-    S.append(banner(title, fg.summary_text(a), 'EXCELLENT' if a.get('likely_test') else a['Status']))
-    if not a.get('likely_test'):
-        S.append(P(fg.risk_note(a), SMALL))
+    S.append(banner(fg.fault_title(a), fg.summary_text(a), 'INFO'))
     if a.get('fault') and is_line and not a.get('no_line_data'):
         S.append(P('Fault location on the line', H2))
         S.append(fig_image(line_fig(a)))
@@ -197,6 +194,10 @@ def incident_pdf(a, rec):
             S.append(KeepTogether([P('Relay settings used', H2),
                                    table([list(T_.columns)] + T_.astype(str).values.tolist(), [W * 0.3] + [W * 0.7 / (len(T_.columns) - 1)] * (len(T_.columns) - 1))]))
     S.append(P('Assessment', H2))
+    if not a.get('likely_test'):
+        c_ = SCOL.get(a['Status'], NAVY).hexval()
+        S.append(Paragraph(f"<font color='{c_}' size='12'><b>{clean(fg.risk_title(a, SLAB[a['Status']]))}</b></font>", BODY))
+        S.append(P(fg.risk_note(a), SMALL))
     for r in fg.findings(a):
         S.append(P(f"- {r}"))
     S.append(Paragraph(f"<b>Action:</b> {clean(a['Action'])}", BODY))
