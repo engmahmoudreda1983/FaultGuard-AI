@@ -431,7 +431,7 @@ def read_docs(files, kind):
             else:
                 txt, how = fg.extract_text(f.getvalue(), f.name)
                 sv = fg.parse_settings(txt); sv['_read_as'] = how
-                if [k for k in sv if not k.startswith('_') and k != 'device']:
+                if [k for k in sv if not k.startswith('_') and k not in ('device', 'station')]:
                     res.append((f.name, sv))
                 else:
                     bad.append(f.name)

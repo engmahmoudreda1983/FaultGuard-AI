@@ -434,6 +434,17 @@ def device_of(txt):
     return m.group(1)[:4].upper() if m else ''
 
 
+def station_of(txt):
+    """Substation of an event list or settings file ('Plant reference: 400kV SILLA SS' -> 'SILLA')."""
+    m = re.search(r'plant\s*ref\w*\s*:?\s*([^\n]+)', txt or '', re.I)
+    return short_station(m.group(1)) if m else ''
+
+
+def short_station(name):
+    w = [x for x in re.split(r'[\s_/,-]+', str(name or '').upper()) if x and not re.match(r'^(\d+(KV)?|KV|SS|S/S|SUBSTATION|SUB|STATION|GIS|AIS)$', x)]
+    return ' '.join(w[:2])
+
+
 IMAGE_EXT = ('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff', '.webp')
 
 
@@ -503,14 +514,14 @@ def parse_events(data, name=''):
                     out = pd.DataFrame({'Timestamp': ts, 'Event': ev, 'Detail': ''}).dropna(subset=['Timestamp'])
                     out = out[out['Event'] != '']
                     if len(out):
-                        out = out.reset_index(drop=True); out.attrs.update({'device': device_of(txt), 'read_as': 'CSV'})
+                        out = out.reset_index(drop=True); out.attrs.update({'device': device_of(txt), 'station': station_of(txt), 'read_as': 'CSV'})
                         return out
             except Exception:
                 pass
     else:
         txt, how = extract_text(data, name)
     df = parse_event_text(txt)
-    df.attrs.update({'device': device_of(txt), 'read_as': how})
+    df.attrs.update({'device': device_of(txt), 'station': station_of(txt), 'read_as': how})
     return df
 
 
@@ -541,7 +552,7 @@ SET_KEYS = [
 SET_LABEL = {'line_length': 'Line length (km)', 'line_z': 'Line impedance (Ω)', 'line_angle': 'Line angle (°)', 'kzn': 'kZN', 'kzn_angle': 'kZN angle (°)',
              'kzm': 'kZm', 'z1_reach': 'Zone 1 reach', 'z2_reach': 'Zone 2 reach', 'z2_time': 'Zone 2 time (ms)', 'ct_primary': 'CT primary (A)',
              'ct_secondary': 'CT secondary (A)', 'vt_primary': 'VT primary (V)', 'vt_secondary': 'VT secondary (V)', 'values_in': 'Setting values',
-             'auto_reclose': 'Auto-reclose', 'device': 'Relay', 'description': 'Description'}
+             'auto_reclose': 'Auto-reclose', 'device': 'Relay', 'station': 'Substation', 'description': 'Description'}
 
 
 def _num_unit(text):
@@ -563,6 +574,8 @@ def parse_settings(text):
     """Line and protection settings from a relay settings export (text, PDF text or OCR). Tolerant of layouts:
     'Line Length   120.0 km', '0C01 Line Length: 120.0km', 'kZN Res Comp 800.0E-3' ..."""
     out = {'device': device_of(text)}
+    if station_of(text):
+        out['station'] = station_of(text)
     m = re.search(r'description\s*[:=]?\s*(.+)', text, re.I)
     if m:
         out['description'] = m.group(1).strip()[:60]
@@ -663,9 +676,18 @@ def best_settings(all_sts):
 
 
 
-def event_values(ev):
-    """Values the relay itself reported in its fault record (fault location, duration, trip time, CB time, phases, elements)."""
+def event_values(ev, t0=None, dur_s=None):
+    """Values the relay itself reported in its fault record (fault location, duration, trip time, CB time, phases, elements).
+    With the record start t0 (and its length) only the fault record of this incident is read, not older ones in the list."""
     out = {}
+    if t0 is not None and len(ev):
+        ts = pd.to_datetime(ev['Timestamp'])
+        w = (ts >= pd.Timestamp(t0) - pd.Timedelta(seconds=5)) & (ts <= pd.Timestamp(t0) + pd.Timedelta(seconds=(dur_s or 1.0) + 10))
+        recs = ev['Event'].astype(str).str.contains(r'fault\s*rec', case=False, regex=True)
+        if (w & recs).any():
+            ev = ev[w]
+        elif recs.any():
+            return out                       # the relay's fault records belong to other incidents
     det = ev['Detail'] if 'Detail' in ev else pd.Series([''] * len(ev), index=ev.index)
     for e, d in zip(ev['Event'].astype(str), det.fillna('').astype(str)):
         is_rec = bool(re.search(r'fault\s*rec', e.lower()))
@@ -703,10 +725,12 @@ def event_values(ev):
                 mm = re.search(rf'^\s*{k}\s+fault\s*:\s*(\d+(?:\.\d+)?)\s*(k?)([av])', d, re.I | re.M)
                 if mm and f'Relay {k} Fault' not in out:
                     out[f'Relay {k} Fault'] = float(mm.group(1)) * (1000 if mm.group(2).lower() == 'k' else 1)
-            for k in ('IB remote 1', 'IA remote 1', 'IC remote 1'):
-                mm = re.search(rf'^\s*{k}\s*:\s*(\d+(?:\.\d+)?)\s*(k?)a', d, re.I | re.M)
-                if mm and f'Relay {k}' not in out:
-                    out[f'Relay {k}'] = float(mm.group(1)) * (1000 if mm.group(2).lower() == 'k' else 1)
+            for ph in 'ABC':
+                for kind in ('local', 'remote 1', 'remote 2', 'Differential', 'Bias'):
+                    k = f'I{ph} {kind}'
+                    mm = re.search(rf'^\s*{k}\s*:\s*(\d+(?:\.\d+)?)\s*(k?)a', d, re.I | re.M)
+                    if mm and f'Relay {k}' not in out:
+                        out[f'Relay {k}'] = float(mm.group(1)) * (1000 if mm.group(2).lower() == 'k' else 1)
     return out
 
 
@@ -885,10 +909,12 @@ def finish(out, rec, events, st):
     """Event-list merge (one or more relays), clock alignment, timing, assessment and risk."""
     t0 = out.get('record_start')
     dur = float(rec['t'][-1] - rec['t'][0])
+    out['station_short'] = short_station(rec.get('station'))
     parts, reports, clock = [], {}, {}
     groups = {}
     for name, ev in _as_list(events):           # several files of the same relay (PDF pages, pictures) are merged
-        dev = getattr(ev, 'attrs', {}).get('device') or name
+        at_ = getattr(ev, 'attrs', {})
+        dev = (at_.get('device') or name) + (f" {at_['station']}" if at_.get('station') else '')
         e = ev.copy()
         if 'Detail' not in e:
             e['Detail'] = ''
@@ -899,7 +925,8 @@ def finish(out, rec, events, st):
         e = e.drop_duplicates(subset=['Timestamp', 'Event']).sort_values('Timestamp', kind='stable').reset_index(drop=True)
         e, sh = align_events(e, t0, dur)
         e['Device'] = dev
-        vals = event_values(e)
+        vals = event_values(e, t0, dur)
+        vals['Station'] = dev.split(' ', 1)[1] if ' ' in dev else ''
         if sh:
             vals['Clock Shift (h)'] = sh
             if isinstance(vals.get('Relay Fault Time'), datetime):
@@ -934,6 +961,11 @@ def finish(out, rec, events, st):
             E = E_all[w].reset_index(drop=True)
         else:
             E = E_all
+        own = out.get('station_short')
+        if E is not None and own and 'Device' in E:
+            st_ = E['Device'].astype(str).str.split(' ', n=1).str[1].fillna('')
+            if (st_ == own).any():                # timing of this record from its own station's relays only
+                E = E[(st_ == own) | (st_ == '')].reset_index(drop=True)
         if E is not None and not len(E):
             E = None
     out['events_all'] = E_all
@@ -1124,10 +1156,14 @@ def assess(out, st):
         w.append(f"The AI fault type ({out['type_ai']}) and the classic phase selection ({out['type_rule']}) disagree: confirm the faulted phases from the waveforms.")
     R['Protection operation'] = s; why['Protection operation'] = w
     rel = {}
+    own = out.get('station_short') or ''
     for dev, v in out.get('relay_reports', {}).items():
         m_ = re.match(r'(-?\d+(?:\.\d+)?)\s*km', str(v.get('Relay Fault Location', '')))
         if m_:
-            rel[dev] = float(m_.group(1))
+            x = float(m_.group(1))
+            if own and v.get('Station') and v['Station'] != own:
+                x = out['line']['length_km'] - x          # the relay at the other end measures from its own end
+            rel[dev] = x
     if rel and out.get('loc_km') is not None:
         tol = max(3.0, 0.05 * out['line']['length_km'])
         diffs = {d: out['loc_km'] - x for d, x in rel.items()}
@@ -1668,6 +1704,41 @@ def record_summary(name, a):
             'Status': ('TEST' if a.get('likely_test') else a.get('Status'))}
 
 
+def line_ends(a, res):
+    """One row per line end: what its disturbance record and its relays saw, with every location given from the same end."""
+    L = a['line']['length_km']; ref = short_station(a.get('station'))
+    rows = {}
+    for n, _, x in res:
+        if not x.get('fault'):
+            continue
+        st = short_station(x.get('station')) or n
+        r = rows.setdefault(st, {'Line end': st})
+        r['Fault current, record (kA)'] = round(float(x['I_fault_max_kA']), 2)
+        if x.get('loc_km') is not None:
+            r['Location seen from this end (km)'] = round(float(x['loc_km']), 1)
+            r[f'Same, from {ref} (km)'] = round(float(x['loc_km'] if st == ref else L - x['loc_km']), 1)
+        for k, lab in (('operate_ms', 'Trip (ms)'), ('breaker_ms', 'Breaker (ms)'), ('clearing_ms', 'Clearing (ms)')):
+            if x.get(k) is not None:
+                r[lab] = round(float(x[k]), 1)
+    for dev, v in (a.get('relay_reports') or {}).items():
+        st = v.get('Station') or ''
+        if not st:
+            continue
+        r = rows.setdefault(st, {'Line end': st})
+        m_ = re.match(r'(-?\d+(?:\.\d+)?)\s*km', str(v.get('Relay Fault Location', '')))
+        if m_:
+            x = float(m_.group(1))
+            r[f"{dev.split(' ')[0]} location (km)"] = x
+            r[f"{dev.split(' ')[0]} location from {ref} (km)"] = round(x if st == ref else L - x, 1)
+        loc_ = [v.get(f'Relay I{p} local') for p in 'ABC']
+        rem = [v.get(f'Relay I{p} remote 1') for p in 'ABC']
+        dif = [v.get(f'Relay I{p} Differential') for p in 'ABC']
+        if any(x is not None for x in dif):
+            r['Differential: local / remote / total (kA)'] = ' / '.join(f"{max(x for x in xs if x is not None) / 1000:.2f}" if any(x is not None for x in xs) else '-'
+                                                                    for xs in (loc_, rem, dif))
+    return pd.DataFrame(list(rows.values()))
+
+
 def analyze_incident(records, events=None, settings=None, line=None, setting=None, model=None, scale='Auto', ct=1.0, vt=1.0, meta=None,
                      use_settings=True):
     """One incident from any number of disturbance records, event lists and settings files.
@@ -1709,8 +1780,31 @@ def analyze_incident(records, events=None, settings=None, line=None, setting=Non
         d = two_ended_location(a, others[0], a['line'])
         if d is not None:
             a['loc_two_ended_km'] = d
-            a['notes'].append(f"Two-ended location (records from {a['station']} and {others[0]['station']}): {d:.1f} km from {a['station']} "
-                              f"({d / a['line']['length_km'] * 100:.0f}% of the line); not affected by fault resistance or infeed.")
+            a['loc_single_km'] = a.get('loc_km')
+            a['loc_km'] = d; a['loc_pu'] = d / a['line']['length_km']; a['loc_method'] = 'two-ended'
+            a['notes'].append(f"Fault location from both line ends ({short_station(a['station'])} and {short_station(others[0]['station'])} records): "
+                              f"{d:.1f} km from {short_station(a['station'])} ({d / a['line']['length_km'] * 100:.0f}% of the line). This method is not "
+                              f"affected by the fault resistance or the infeed from the other end, so it is used as the fault location.")
+            # the single-ended estimates, explained
+            o = others[0]; L = a['line']['length_km']; sa, so_ = short_station(a['station']), short_station(o['station'])
+            a['notes'] = [n for n in a['notes'] if not n.startswith(('Fault location: FaultGuard', 'FaultGuard location'))]
+            rel = []
+            for dev, v in (a.get('relay_reports') or {}).items():
+                m_ = re.match(r'(-?\d+(?:\.\d+)?)\s*km', str(v.get('Relay Fault Location', '')))
+                if m_:
+                    x = float(m_.group(1)); xr = x if v.get('Station') in ('', sa) else L - x
+                    rel.append(f"{dev} {x:.1f} km" + ('' if v.get('Station') in ('', sa) else f" (= {xr:.1f} km from {sa})"))
+            weak, strong = (sa, so_) if a['I_fault_max_kA'] < o['I_fault_max_kA'] else (so_, sa)
+            if a.get('loc_single_km') is not None and o.get('loc_km') is not None:
+                a['notes'].append(f"Single-ended locations: {sa} record {a['loc_single_km']:.1f} km, {so_} record {o['loc_km']:.1f} km from {so_} "
+                                  f"(= {L - o['loc_km']:.1f} km from {sa})" + (f"; relays {', '.join(rel)}" if rel else '') + '. '
+                                  f"They do not agree because each end sees the fault resistance magnified by the current from the other end; "
+                                  f"the weaker end ({weak}) is the most affected. The location from both ends is used.")
+            pct = round(d / L * 100)
+            for m_ in a.get('Reasons', {}):
+                a['Reasons'][m_] = [re.sub(r'The fault is at \d+% of the line', f'The fault is at {pct}% of the line (location from both ends)', w)
+                                    for w in a['Reasons'][m_]]
+    a['ends'] = line_ends(a, res)
     # differences between the records of the same incident
     types = {x['Fault Type'] for x in a['records'] if x['Fault Type'] not in ('No fault',)}
     if len(types) > 1:
@@ -1720,7 +1814,7 @@ def analyze_incident(records, events=None, settings=None, line=None, setting=Non
 
 def settings_table(sts):
     rows = []
-    keys = ['device', 'description', 'line_length', 'line_z', 'line_angle', 'kzn', 'kzn_angle', 'kzm', 'z1_reach', 'z2_reach', 'z2_time',
+    keys = ['device', 'station', 'description', 'line_length', 'line_z', 'line_angle', 'kzn', 'kzn_angle', 'kzm', 'z1_reach', 'z2_reach', 'z2_time',
             'ct_primary', 'ct_secondary', 'vt_primary', 'vt_secondary', 'values_in', 'auto_reclose']
     for k in keys:
         r = {'Setting': SET_LABEL.get(k, k)}
@@ -1728,7 +1822,8 @@ def settings_table(sts):
             v = sv.get(k)
             if k in ('z1_reach', 'z2_reach') and v is not None:
                 v = f"{v:g} {'%' if sv.get(k + '_unit') == '%' else 'Ω'}"
-            r[sv.get('device') or n] = '-' if v is None else (f"{v:g}" if isinstance(v, float) else str(v))
+            col = (sv.get('device') or n) + (f" {sv['station']}" if sv.get('station') else '')
+            r[col] = '-' if v is None else (f"{v:g}" if isinstance(v, float) else str(v))
         rows.append(r)
     return pd.DataFrame(rows)
 

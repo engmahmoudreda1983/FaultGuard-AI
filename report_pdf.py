@@ -131,6 +131,16 @@ def incident_pdf(a, rec):
         cols = list(C.columns)
         wq = 0.17; wr = (1 - wq) / (len(cols) - 1)
         S.append(table([cols] + C.astype(str).values.tolist(), [W * wq] + [W * wr] * (len(cols) - 1)))
+        ends = a.get('ends')
+        if ends is not None and len(ends) > 1:
+            S.append(P('Both line ends', H2))
+            T_ = ends.set_index('Line end').T.reset_index().rename(columns={'index': 'Item'})
+            T_ = T_.astype(str).replace({'nan': '-', 'None': '-'})
+            S.append(table([list(T_.columns)] + T_.values.tolist(), [W * 0.4] + [W * 0.6 / (len(T_.columns) - 1)] * (len(T_.columns) - 1)))
+            dif = [c for c in ends.columns if c.startswith('Differential')]
+            if dif:
+                S.append(P('The line differential relays at both ends measured the same total fault current (local + remote): the fault was inside '
+                           'the protected line.', SMALL))
         if a.get('restored'):
             rs = a['restored']
             S.append(P(f"Line re-energised at {pd.Timestamp(rs['time']):%Y-%m-%d %H:%M:%S}, {fg.fmt_dur(rs['after_s'])} after the fault ({rs['device']}: {rs['event']}).", SMALL))
