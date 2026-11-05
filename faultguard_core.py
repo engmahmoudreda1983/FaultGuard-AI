@@ -1750,7 +1750,8 @@ def source_tables(a):
     ends = a.get('end_list') or []
     if len(ends) < 2:
         return None
-    ref = ends[0]
+    ref = short_station(a.get('station')) if short_station(a.get('station')) in ends else ends[0]
+    ends = [ref] + [s for s in ends if s != ref]
     from_ref = lambda st, x: None if x is None else (x if st == ref else L - x)
     r1 = lambda v: '-' if v is None else f"{v:.1f}"
     r2 = lambda v: '-' if v is None else f"{v:.2f}"
@@ -1932,7 +1933,8 @@ def analyze_incident(records, events=None, settings=None, line=None, setting=Non
     with_rec = {x_.get('record_device') for _, _, x_ in res if x_.get('record_device')}
     for _, _, x_ in res:
         x_['devices_with_records'] = sorted(with_rec)
-    score = lambda x: (bool(x[2].get('fault')), not x[2].get('likely_test'),
+    end_a = short_station((meta or {}).get('End A'))          # the station the user put first is the reference end
+    score = lambda x: (bool(x[2].get('fault')), not x[2].get('likely_test'), bool(end_a) and short_station(x[1].get('station')) == end_a,
                        sum(x[2]['channels'].get(k) is not None for k in ('IA', 'IB', 'IC', 'VA', 'VB', 'VC', 'IN')), len(x[1]['digital']))
     name, rec, a = max(res, key=score)
     a['_rec_main'] = rec
@@ -1981,6 +1983,10 @@ def analyze_incident(records, events=None, settings=None, line=None, setting=Non
     a['end_records'] = st_
     a['end_list'] = [e['station'] for e in st_] + [s for s in sorted({v.get('Station') for v in (a.get('relay_reports') or {}).values() if v.get('Station')})
                                                      if s not in [e['station'] for e in st_]]
+    ms_ = short_station(a.get('station'))            # the reference end (the main record's station) always first
+    if ms_ in a['end_list']:
+        a['end_list'] = [ms_] + [s for s in a['end_list'] if s != ms_]
+        a['end_records'] = sorted(st_, key=lambda e: e['station'] != ms_)
     try:
         T_ = source_tables(a)
         if T_ is not None:
@@ -2113,6 +2119,9 @@ def line_fig(a, width=10, height=2.9):
     A_, B_ = stations(a)
     a_s, b_s = short_station(A_) or A_, short_station(B_) or B_
     loc = a.get('loc_report_km', a.get('loc_km'))
+    own = short_station(a.get('station'))
+    if loc is not None and own and own == b_s and own != a_s:
+        loc = L - loc                     # the location is measured from the main record's station, which is drawn on the right
     fig, ax = plt.subplots(figsize=(width, height))
     ax.set_xlim(-0.16 * L, L * 1.16); ax.set_ylim(-2.0, 2.3); ax.axis('off')
     ax.plot([0, L], [0, 0], color='#3b3b3b', lw=4, solid_capstyle='butt', zorder=2)

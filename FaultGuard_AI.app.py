@@ -551,11 +551,15 @@ def analysis_page():
             setting['char_ph'] = setting['char_gnd'] = 'quad' if ss.get('st_char', 'Quadrilateral') == 'Quadrilateral' else 'mho'
             meta = {'Incident': ss['inc_id'] or rec_name, 'Relay': ss['inc_relay'] or (rec.get('device') or '').title(),
                     'Date': str(rec.get('start'))[:19] if rec.get('start') else ''}
+            if ss.get('inc_a'):
+                meta['End A'] = ss['inc_a']
             if src == "Demo incident":
                 a = fg.analyze(rec, events, line, setting, model=MODEL(), scale=ss['scale'], ct=ss['ct'], vt=ss['vt'], meta=meta)
             else:
                 a, rec = fg.analyze_incident(recs, events, settings, line, setting, model=MODEL(), scale=ss['scale'], ct=ss['ct'], vt=ss['vt'],
                                              meta=meta, use_settings=ss.get('use_set', True))
+                if rec.get('start'):                    # the date of the main (reference end) record
+                    a['meta']['Date'] = str(rec.get('start'))[:19]
                 if not ss['inc_relay'] and a.get('relay_reports'):
                     a['meta']['Relay'] = ' / '.join(a['relay_reports'])
             if a.get('record_name') is None:
