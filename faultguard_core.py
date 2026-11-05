@@ -1856,6 +1856,7 @@ def analyze_incident(records, events=None, settings=None, line=None, setting=Non
     records: [(name, rec)], events: [(name, DataFrame)], settings: [(name, parsed dict)].
     Returns (analysis of the main record with the merged view, main record)."""
     line = dict(line or {}); setting = dict(setting or {}); notes = []
+    line0, setting0, ct0, vt0 = dict(line), dict(setting), ct, vt
     sts = [(n, s) for n, s in (settings or []) if s]
     used = best_settings(sts) if (sts and use_settings) else None
     if used:
@@ -1877,8 +1878,23 @@ def analyze_incident(records, events=None, settings=None, line=None, setting=Non
         setting['no_line_data'] = True
     res = []
     for name, rec in records:
-        a = analyze(rec, events, line, setting, model=model, scale=scale, ct=ct, vt=vt, meta=meta)
+        # each line end uses the settings of its own relays (zones, kZN, CT/VT), when they are given
+        st_rec = short_station(rec.get('station'))
+        own = [(n, s) for n, s in sts if s.get('station') and s.get('station') == st_rec]
+        use_r = best_settings(own) if (own and use_settings) else None
+        ln_, se_, ct_, vt_ = line, setting, ct, vt
+        if use_r and used and use_r[0] != used[0]:
+            ln_, se_ = dict(line0), dict(setting0)
+            ls, ss_, _ = settings_line(use_r[1], ct0, vt0)
+            ln_.update(ls)
+            ctr, vtr = ss_.pop('_ct', None), ss_.pop('_vt', None)
+            se_.update(ss_)
+            if scale == 'Secondary' and ctr and vtr:
+                ct_, vt_ = ctr, vtr
+        a = analyze(rec, events, ln_, se_, model=model, scale=scale, ct=ct_, vt=vt_, meta=meta)
         a['station'] = (rec.get('station') or '').strip(); a['device'] = (rec.get('device') or '').strip(); a['record_name'] = name
+        a['settings_from'] = (use_r or used or (None, {}))[0]
+        a['settings_dev'] = ((use_r or used or (None, {}))[1] or {}).get('device')
         res.append((name, rec, a))
     if not res:
         raise ValueError('No disturbance record.')
@@ -2256,7 +2272,7 @@ def rx_fig(a, width=7.2, height=6.4):
     ax.legend(loc='lower right', fontsize=7.5, framealpha=0.95)
     ax.set_xlim(-0.55 * lim, lim); ax.set_ylim(-0.3 * lim, 1.1 * lim); ax.set_aspect('equal')
     kind = shapes[0][4] if shapes else 'mho'
-    src_ = 'from the relay settings' if a.get('settings_used') else 'as entered'
+    src_ = 'from the relay settings' if (a.get('settings_used') or a.get('settings_from')) else 'as entered'
     ax.set_title(f"Impedance seen by the relay ({'quadrilateral' if kind == 'quad' else 'mho'} zones {src_})", fontsize=10, fontweight='bold', color='#0b2e59', loc='left')
     ax.set_xlabel('R (Ω primary)', fontsize=9); ax.set_ylabel('X (Ω primary)', fontsize=9); ax.grid(alpha=.3, lw=0.6); ax.tick_params(labelsize=8)
     return fig
