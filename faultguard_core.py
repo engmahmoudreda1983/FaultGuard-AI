@@ -2835,3 +2835,21 @@ def location_explanation(a):
     return {'intro': f"All distances are in km along the line ({L:.1f} km). {sa} and {sb} each have a disturbance record, and every relay at both "
                      f"ends gave its own fault location. The location is found in three steps.",
             'steps': steps, 'result': result}
+
+
+def file_stem(a):
+    """Download file name for the incident: stations, equipment, fault type and date, e.g. SALWA-SILLA_L12_BG-fault_2026-10-21_1330."""
+    m = a.get('meta') or {}
+    ea, eb = short_station(m.get('End A')), short_station(m.get('End B'))
+    eq = str(m.get('Equipment') or '').strip()
+    if not eq:
+        g = re.search(r'\bL\d+\b', str(m.get('Line') or ''))
+        eq = g.group(0) if g else ''
+    if eq and eq[0].isdigit() and (m.get('Equipment Type') or 'Line') == 'Line':
+        eq = re.search(r'\(L\d+\)', str(m.get('Line') or '')).group(0)[1:-1] if re.search(r'\(L\d+\)', str(m.get('Line') or '')) else 'L' + eq
+    d = pd.to_datetime(m.get('Date'), errors='coerce')
+    parts = ['-'.join(x for x in (ea, eb) if x), eq, (f"{a['type']}-fault" if a.get('fault') and a.get('type') else 'trip'),
+             '' if pd.isna(d) else f"{d:%Y-%m-%d_%H%M}"]
+    stem = '_'.join(p for p in parts if p)
+    return re.sub(r'[^A-Za-z0-9_.-]+', '-', stem).strip('-_') or 'incident'
+

@@ -690,7 +690,7 @@ def show_incident(a, rec):
     st.markdown("#### Sequence of events (record and event list)")
     so = fg.soe(a)
     st.dataframe(so, hide_index=True, width=STRETCH, height=min(420, 38 + 35 * len(so)))
-    stem = str(m.get('Incident') or 'incident').replace(' ', '_').replace('/', '-')
+    stem = fg.file_stem(a)                               # named after the fault: stations, line, fault type, date
     d = st.columns(4)
     d[0].download_button("📄 Download Incident Report (PDF)", pdfrep.incident_pdf(a, rec), f"FaultGuard_{stem}.pdf", 'application/pdf', key='fp_pdf')
     d[3].download_button("🎬 Dynamic report (HTML)", trip_html.trip_html(a, rec).encode('utf-8'), f"FaultGuard_{stem}_dynamic.html", 'text/html', key='fp_html',
