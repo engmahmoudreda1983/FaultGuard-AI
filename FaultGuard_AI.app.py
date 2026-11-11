@@ -432,9 +432,11 @@ def read_docs(files, kind):
                 else:
                     bad.append(f.name)
             else:
-                txt, how = fg.extract_text(f.getvalue(), f.name)
-                sv = fg.parse_settings(txt); sv['_read_as'] = how
-                if [k for k in sv if not k.startswith('_') and k not in ('device', 'station')]:
+                sv = fg.read_settings_file(f.getvalue(), f.name)
+                if sv.get('_note'):
+                    st.info(f"{f.name}: {sv['_note']}.")
+                if [k for k in sv if not k.startswith('_') and k not in ('device', 'station', 'model', 'active_group', 'plant_reference',
+                                                                          'description', 'values_in', 'auto_reclose')]:
                     res.append((f.name, sv))
                 else:
                     bad.append(f.name)
@@ -446,7 +448,7 @@ def read_docs(files, kind):
 def analysis_page():
     init_fp()
     st.markdown("<div class='pg-note'>Upload the files of every relay involved: <b>disturbance records</b> (COMTRADE .cfg + .dat, any number of relays), "
-                "<b>event lists</b> and <b>settings</b> (PDF, scanned PDF, picture, CSV, TXT or Excel, any number). FaultGuard merges them into one trip "
+                "<b>event lists</b> and <b>settings</b> (the MiCOM settings file .set itself, or PDF, scanned PDF, picture, CSV, TXT or Excel, any number). FaultGuard merges them into one trip "
                 "analysis. Without a settings file, enter the line data below. Or pick a demo incident.</div>", unsafe_allow_html=True)
     src = st.radio("Data source", ["Demo incident", "Upload relay files"], horizontal=True, key='fp_src', on_change=src_changed)
     events, rec, rec_name, ev_name, settings = None, None, None, None, None
@@ -469,7 +471,8 @@ def analysis_page():
         up_rec = c1.file_uploader("1. Disturbance records (COMTRADE .cfg + .dat, .zip, or CSV), any number of relays",
                                   type=['cfg', 'dat', 'zip', 'csv', 'CFG', 'DAT', 'ZIP', 'CSV'], accept_multiple_files=True, key='up_rec')
         up_ev = c2.file_uploader("2. Event lists (PDF, picture, CSV, TXT, Excel), any number", type=DOC, accept_multiple_files=True, key='up_ev')
-        up_set = c3.file_uploader("3. Relay settings (PDF, picture, CSV, TXT, Excel), any number", type=DOC, accept_multiple_files=True, key='up_set')
+        up_set = c3.file_uploader("3. Relay settings (MiCOM .set file, PDF, picture, CSV, TXT, Excel), any number",
+                                  type=DOC + ['set', 'SET'], accept_multiple_files=True, key='up_set')
         c1.number_input("Frequency for CSV records (Hz)", 45.0, 65.0, 50.0, 10.0, key='csv_freq')
         c3.checkbox("Use the settings files for the line data and protection settings", True, key='use_set')
     st.markdown("##### Protected equipment (one trip report per fault)")

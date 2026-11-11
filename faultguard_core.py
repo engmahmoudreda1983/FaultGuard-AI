@@ -24,6 +24,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 import comtrade_features as cf
+import micom_set
 
 EXCELLENT_MAX, WATCH_MAX = 35.0, 70.0
 DETECTION = 2
@@ -441,7 +442,8 @@ def station_of(txt):
 
 
 def short_station(name):
-    w = [x for x in re.split(r'[\s_/,-]+', str(name or '').upper()) if x and not re.match(r'^(\d+(KV)?|KV|SS|S/S|SUBSTATION|SUB|STATION|GIS|AIS)$', x)]
+    s = re.sub(r'\bS\s*/\s*S\b', ' ', str(name or '').upper())          # 'GHUNAN S/S' is GHUNAN, not 'GHUNAN S'
+    w = [x for x in re.split(r'[\s_/,-]+', s) if x and not re.match(r'^(\d+(KV)?|KV|SS|S/S|SUBSTATION|SUB|STATION|GIS|AIS)$', x)]
     return ' '.join(w[:2])
 
 
@@ -550,7 +552,8 @@ SET_KEYS = [
     ('vt_secondary', r'(?:main\s*)?vt\s*sec\w*'),
 ]
 SET_LABEL = {'line_length': 'Line length (km)', 'line_z': 'Line impedance (Ω)', 'line_angle': 'Line angle (°)', 'kzn': 'kZN', 'kzn_angle': 'kZN angle (°)',
-             'kzm': 'kZm', 'z1_reach': 'Zone 1 reach', 'z2_reach': 'Zone 2 reach', 'z2_time': 'Zone 2 time (ms)', 'ct_primary': 'CT primary (A)',
+             'kzm': 'kZm', 'z1_reach': 'Zone 1 reach', 'z2_reach': 'Zone 2 reach', 'z3_reach': 'Zone 3 reach', 'z1_time': 'Zone 1 time (ms)', 'z2_time': 'Zone 2 time (ms)',
+             'z3_time': 'Zone 3 time (ms)', 'ct_primary': 'CT primary (A)',
              'ct_secondary': 'CT secondary (A)', 'vt_primary': 'VT primary (V)', 'vt_secondary': 'VT secondary (V)', 'values_in': 'Setting values',
              'auto_reclose': 'Auto-reclose', 'device': 'Relay', 'station': 'Substation', 'description': 'Description'}
 
@@ -613,6 +616,26 @@ def parse_settings(text):
             out[key] = v
             break
     return out
+
+
+SET_FILE_EXT = ('.set',)
+
+
+def read_settings_file(data, name=''):
+    """Settings of one relay from any file: a MiCOM settings file (.set, read cell by cell, exact values of the active group)
+    or a settings export as PDF, picture, CSV, TXT or Excel (read as text). Returns the parsed dict (same keys either way)."""
+    if name.lower().endswith(SET_FILE_EXT) or data[:12] == b'APP: Courier':
+        sv = micom_set.fault_settings(bytes(data))
+        if sv.get('plant_reference'):
+            sv['station'] = short_station(sv['plant_reference'])
+        if sv.pop('defaults', False):
+            for k in ('line_length', 'line_z', 'line_angle', 'kzn', 'kzn_angle'):
+                sv.pop(k, None)
+            sv['_note'] = 'the line parameters in this file are the factory values (10 ohm, 70 deg), so they are not used'
+        return sv
+    txt, how = extract_text(data, name)
+    sv = parse_settings(txt); sv['_read_as'] = how
+    return sv
 
 
 def settings_line(sts, ct=None, vt=None):
@@ -1944,7 +1967,7 @@ def analyze_incident(records, events=None, settings=None, line=None, setting=Non
     a['settings_all'] = sts; a['settings_used'] = used
     a['notes'] = notes + a.get('notes', [])
     # records from the other line end: two-ended location
-    others = [x for n, _, x in res if x is not a and x.get('fault') and x.get('station') and x['station'].lower() != (a.get('station') or '').lower()]
+    others = [x for n, _, x in res if x is not a and x.get('fault') and x.get('station') and short_station(x['station']) != short_station(a.get('station'))]
     if others and a.get('fault'):
         d = two_ended_location(a, others[0], a['line'])
         if d is not None:
@@ -2004,13 +2027,13 @@ def analyze_incident(records, events=None, settings=None, line=None, setting=Non
 
 def settings_table(sts):
     rows = []
-    keys = ['device', 'station', 'description', 'line_length', 'line_z', 'line_angle', 'kzn', 'kzn_angle', 'kzm', 'z1_reach', 'z2_reach', 'z2_time',
+    keys = ['device', 'station', 'description', 'line_length', 'line_z', 'line_angle', 'kzn', 'kzn_angle', 'kzm', 'z1_reach', 'z2_reach', 'z3_reach', 'z1_time', 'z2_time', 'z3_time',
             'ct_primary', 'ct_secondary', 'vt_primary', 'vt_secondary', 'values_in', 'auto_reclose']
     for k in keys:
         r = {'Setting': SET_LABEL.get(k, k)}
         for n, sv in sts:
             v = sv.get(k)
-            if k in ('z1_reach', 'z2_reach') and v is not None:
+            if k in ('z1_reach', 'z2_reach', 'z3_reach') and v is not None:
                 v = f"{v:g} {'%' if sv.get(k + '_unit') == '%' else 'Ω'}"
             col = (sv.get('device') or n) + (f" {sv['station']}" if sv.get('station') else '')
             r[col] = '-' if v is None else (f"{v:g}" if isinstance(v, float) else str(v))
