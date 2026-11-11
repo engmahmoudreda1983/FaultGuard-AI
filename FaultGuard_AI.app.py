@@ -66,7 +66,7 @@ def secrets_ok():
 # ==========================================
 # --- 1. Login ---
 # ==========================================
-for key, default in [('logged_in', False), ('register', []), ('last', None)]:
+for key, default in [('logged_in', False), ('register', []), ('last', None), ('incident_records', {})]:
     if key not in st.session_state:
         st.session_state[key] = default
 
@@ -580,6 +580,9 @@ def analysis_page():
         st.session_state['last'] = (a, rec)
         r = to_record(a, 'Demo' if src == "Demo incident" else 'Uploaded files')
         st.session_state['register'] = [x for x in st.session_state['register'] if x['Incident'] != r['Incident']] + [r]
+        # the records of every incident, for NetworkGuard on the platform (grid short-circuit power from the fault)
+        st.session_state['incident_records'] = {**st.session_state.get('incident_records', {}),
+                                                r['Incident']: [(rec_name, rec)] if src == "Demo incident" else list(recs)}
     if st.session_state['last'] is not None:
         show_incident(*st.session_state['last'])
 
@@ -798,7 +801,7 @@ with T_OV:
         st.markdown("<div class='pg-note'>Every incident analyzed on the <b>Incident Analysis</b> page is collected here (latest per incident ID).</div>",
                     unsafe_allow_html=True)
         if R0 and st.button("🗑 Clear results"):
-            st.session_state['register'] = []
+            st.session_state['register'] = []; st.session_state['incident_records'] = {}
             st.rerun()
     else:
         st.info("Synthetic demo substation: 7 incidents on four 400 kV lines (single-phase, phase-phase, three-phase and permanent faults, a slow breaker, "
