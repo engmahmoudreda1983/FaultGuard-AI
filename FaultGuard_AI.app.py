@@ -788,6 +788,46 @@ def stats_page(R):
 # ==========================================
 # --- 8. Tabs ---
 # ==========================================
+# ---- about this module: shown open at the top of the overview page (it can be closed)
+ABOUT = {
+ "lead": "Analyses a trip on a line from the disturbance records, the relay event lists and the relay settings: what kind of fault, where on the line, how fast it was cleared, which protection operated and whether it operated correctly.",
+ "in": [
+  "Disturbance records from one or both line ends (COMTRADE, .zip or CSV)",
+  "Relay event lists (PDF, picture, CSV, TXT, Excel)",
+  "Relay settings (MiCOM .set, PDF, picture, CSV, TXT, Excel)"
+ ],
+ "out": [
+  "Fault type and faulted phases",
+  "Fault location, compared with the relays' own locations",
+  "Operate, breaker and clearing times, auto-reclose",
+  "Which protection operated, against the settings; PDF report",
+  "The incident can be applied to the network in NetworkGuard"
+ ],
+ "start": [
+  "Incident Analysis: upload the records, event lists and settings together",
+  "Press Analyze Incident",
+  "Read the summary and open the report; statistics build up in Incident Statistics"
+ ],
+ "pages": [
+  "Incidents Overview: every incident analysed",
+  "Incident Analysis",
+  "Combined Report, Incident Statistics",
+  "FMEA Reference"
+ ],
+ "std": "IEEE C37.111 (COMTRADE) · IEEE C37.113 (line protection) · IEC 60812 (FMEA)"
+}
+
+
+def about_module():
+    with st.expander('ℹ️ About this module: what it does and how to use it', expanded=True):
+        st.markdown(ABOUT['lead'])
+        for (t1, k1), (t2, k2) in ((('What you upload', 'in'), ('What you get', 'out')), (('How to start', 'start'), ('Pages', 'pages'))):
+            for col, title, key in zip(st.columns(2), (t1, t2), (k1, k2)):
+                with col.container(border=True):
+                    st.markdown(f'**{title}**\n\n' + '\n'.join((f'{i + 1}. ' if key == 'start' else '- ') + x for i, x in enumerate(ABOUT[key])))
+        st.caption('Standards: ' + ABOUT['std'])
+
+
 tabs = st.tabs(["🏭 Incidents Overview", "⚡ Incident Analysis", "📄 Combined Report", "📈 Incident Statistics", "📘 FMEA Reference"])
 T_OV, T_AN, T_REP, T_STAT, T_FMEA = tabs
 
@@ -795,6 +835,7 @@ OV_COLS = ['Incident', 'Date', 'Line', 'Fault Type', 'Location', 'Fault Current 
            'Auto-Reclose', 'Highest-Risk Mode', 'Main Reason', 'Overall Risk (%)', 'Status', 'RPN', 'RPN Level', 'Source', 'Action']
 
 with T_OV:
+    about_module()
     st.radio("Show", [SRC_PAGES, SRC_DEMO], horizontal=True, key='ov_src')
     R0 = current_records()
     if st.session_state['ov_src'] == SRC_PAGES:
