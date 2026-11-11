@@ -569,7 +569,8 @@ def analysis_page():
                     a['meta']['Relay'] = ' / '.join(a['relay_reports'])
             if a.get('record_name') is None:
                 a['records'] = [fg.record_summary(rec_name, dict(a, station=rec.get('station')))]
-            fg.name_equipment(a, ss['inc_type'], ss['inc_name'] or None, ss['inc_a'] or None, ss['inc_b'] or None)
+            fg.name_equipment(a, ss['inc_type'], ss['inc_name'] or None, ss['inc_a'] or None, ss['inc_b'] or None,
+                              file_names=[f.name for f in (up_rec or []) + (up_ev or []) + (up_set or [])] if src != "Demo incident" else None)
             if not ss['inc_id']:
                 a['meta']['Incident'] = f"{a['meta'].get('Equipment') or 'Trip'} {str(a['meta'].get('Date') or '')[:10]}".strip()
         except Exception as e:

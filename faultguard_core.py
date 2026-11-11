@@ -2350,7 +2350,26 @@ def equipment_code(text):
     return m.group(1).upper().replace(' ', '') if m else ''
 
 
-def name_equipment(a, typ=None, name=None, end_a=None, end_b=None):
+_CIRCUIT = _re.compile(r'(?<![A-Z0-9])(\d{1,3})_([A-Z][A-Z]{2,})_([A-Z][A-Z]{2,})(?![A-Z])')
+
+
+def circuit_from_names(texts):
+    """Circuit number and its two stations from names written as <circuit>_<station>_<station>, the usual way circuits are
+    named in file names, folder names and relay descriptions (e.g. '41_EAST_NORTH' = circuit 41 between EAST and NORTH).
+    Returns (number, station, station) or None. Nothing is stored: the names come only from the uploaded files."""
+    for x in texts or []:
+        m = _CIRCUIT.search(str(x or '').upper().replace('-', '_'))
+        if m:
+            return m.group(1), m.group(2), m.group(3)
+    return None
+
+
+def _same_station(x, y):
+    x, y = _re.sub(r'[^A-Z]', '', str(x).upper()), _re.sub(r'[^A-Z]', '', str(y).upper())
+    return bool(x and y) and (x[:4] == y[:4] or x in y or y in x)
+
+
+def name_equipment(a, typ=None, name=None, end_a=None, end_b=None, file_names=None):
     """Fill the incident's equipment identity: type, number, the two ends (stations) and the report title.
     Ends come from the user, else from the records of both ends, else from the record station and the relay description."""
     m = a.setdefault('meta', {})
@@ -2369,6 +2388,18 @@ def name_equipment(a, typ=None, name=None, end_a=None, end_b=None):
             a0, b0 = rec_st[0], rec_st[1]
         else:
             a0, b0 = stations(a)
+            # the remote end from the circuit name in the uploaded file names or the relay description (e.g. 42_EAST_NORTH)
+            names = list(file_names or []) + [r.get('Record') for r in a.get('records') or []] + \
+                [x for n_, s_ in (a.get('settings_all') or []) for x in (n_, s_.get('description'))]
+            cc = circuit_from_names(names)
+            if cc and b0 in ('', 'Remote end', None) or (cc and _same_station(a0, b0)):
+                ends = [s_.title() for s_ in cc[1:]]
+                if _same_station(a0, ends[0]):
+                    b0 = ends[1]
+                elif _same_station(a0, ends[1]):
+                    b0 = ends[0]
+                elif a0 in ('', 'Station A'):
+                    a0, b0 = ends
         end_a, end_b = end_a or a0, end_b or (b0 if b0 != 'Remote end' or typ in ('Line', 'Cable') else '')
     kv = a.get('line', {}).get('kv')
     kvs = f"{kv:g} kV " if kv else ''
