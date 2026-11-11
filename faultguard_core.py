@@ -436,13 +436,13 @@ def device_of(txt):
 
 
 def station_of(txt):
-    """Substation of an event list or settings file ('Plant reference: 400kV SILLA SS' -> 'SILLA')."""
+    """Substation of an event list or settings file ('Plant reference: 400kV NORTH SS' -> 'NORTH')."""
     m = re.search(r'plant\s*ref\w*\s*:?\s*([^\n]+)', txt or '', re.I)
     return short_station(m.group(1)) if m else ''
 
 
 def short_station(name):
-    s = re.sub(r'\bS\s*/\s*S\b', ' ', str(name or '').upper())          # 'GHUNAN S/S' is GHUNAN, not 'GHUNAN S'
+    s = re.sub(r'\bS\s*/\s*S\b', ' ', str(name or '').upper())          # 'EAST S/S' is EAST, not 'EAST S'
     w = [x for x in re.split(r'[\s_/,-]+', s) if x and not re.match(r'^(\d+(KV)?|KV|SS|S/S|SUBSTATION|SUB|STATION|GIS|AIS)$', x)]
     return ' '.join(w[:2])
 
@@ -2345,7 +2345,7 @@ EQUIP_TYPES = ['Line', 'Cable', 'Transformer', 'Reactor', 'Busbar']
 
 
 def equipment_code(text):
-    """Equipment number from a relay description such as '21A SILAA L12' -> 'L12' (also T1, R2, TR3, BB1)."""
+    """Equipment number from a relay description such as '21A NORTH L12' -> 'L12' (also T1, R2, TR3, BB1)."""
     m = _re.search(r'\b((?:L|T|TR|R|SR|BB|C)\s*-?\d{1,3}[A-Z]?)\b', str(text or ''), _re.I)
     return m.group(1).upper().replace(' ', '') if m else ''
 
@@ -2872,7 +2872,7 @@ def location_explanation(a):
 
 
 def file_stem(a):
-    """Download file name for the incident: stations, equipment, fault type and date, e.g. SALWA-SILLA_L12_BG-fault_2026-10-21_1330."""
+    """Download file name for the incident: stations, equipment, fault type and date, e.g. EAST-NORTH_L12_BG-fault_2026-10-21_1330."""
     m = a.get('meta') or {}
     ea, eb = short_station(m.get('End A')), short_station(m.get('End B'))
     eq = str(m.get('Equipment') or '').strip()

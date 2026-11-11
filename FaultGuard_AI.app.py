@@ -477,7 +477,7 @@ def analysis_page():
         c3.checkbox("Use the settings files for the line data and protection settings", True, key='use_set')
     st.markdown("##### Protected equipment (one trip report per fault)")
     st.caption("Leave a box empty to fill it from the files: the stations from the disturbance records, the equipment number and the remote end "
-               "from the relay description in the settings (e.g. '21A SILAA L12').")
+               "from the relay description in the settings (e.g. '21A NORTH L12').")
     c = st.columns([1, 1, 0.8, 1.2, 1.2, 1])
     c[0].text_input("Incident ID", key='inc_id')
     c[1].selectbox("Equipment type", fg.EQUIP_TYPES, key='inc_type')
