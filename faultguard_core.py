@@ -2378,6 +2378,11 @@ def name_equipment(a, typ=None, name=None, end_a=None, end_b=None, file_names=No
     desc = (used[1].get('description') if used else '') or ''
     name = name or m.get('Equipment') or equipment_code(desc) or equipment_code(m.get('Line'))
     tidy = lambda x: _re.sub(r'\s{2,}', ' ', _re.sub(r'\b(\d+\s*kv|s/?s|substation|sub|bay|\d+[a-z]?|l\d+|line)\b', '', str(x), flags=_re.I)).strip(' -').title()
+    names = list(file_names or []) + [r.get('Record') for r in a.get('records') or []] + \
+        [x for n_, s_ in (a.get('settings_all') or []) for x in (n_, s_.get('description'))]
+    cc = circuit_from_names(names)
+    if cc:
+        m['Circuit'] = f"{cc[0]}_{cc[1]}_{cc[2]}"           # e.g. 42_EAST_NORTH, from the uploaded file names
     rec_st = []
     for r in a.get('records') or []:
         t_ = tidy(r.get('Station') or '')
@@ -2389,9 +2394,6 @@ def name_equipment(a, typ=None, name=None, end_a=None, end_b=None, file_names=No
         else:
             a0, b0 = stations(a)
             # the remote end from the circuit name in the uploaded file names or the relay description (e.g. 42_EAST_NORTH)
-            names = list(file_names or []) + [r.get('Record') for r in a.get('records') or []] + \
-                [x for n_, s_ in (a.get('settings_all') or []) for x in (n_, s_.get('description'))]
-            cc = circuit_from_names(names)
             if cc and b0 in ('', 'Remote end', None) or (cc and _same_station(a0, b0)):
                 ends = [s_.title() for s_ in cc[1:]]
                 if _same_station(a0, ends[0]):

@@ -12,6 +12,10 @@ fault type (AI model checked by the classic phase selection), fault location, pr
 that tripped, the distance zone the impedance entered (quadrilateral or mho zones from the settings), restoration time, relay clock alignment, settings used, an incident risk with FMEA and actions. The external
 auto-recloser is normally out of service, so auto-reclose is reported but not assessed unless it is marked in service.
 
+Station names come only from the uploaded files: the records, the event lists, the settings (plant reference and
+description) and the file names (a circuit written as <circuit>_<station>_<station>, e.g. 42_EAST_NORTH, gives the circuit
+and the far station). Each incident passes End A, End B and the circuit to NetworkGuard.
+
 ## Pages
 - **Incidents Overview**: results from the analysis page, or the demo substation (7 simulated incidents).
 - **Incident Analysis**: demo incident or uploaded files, incident data, line data (per-km sequence impedances or the
