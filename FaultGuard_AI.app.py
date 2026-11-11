@@ -155,7 +155,7 @@ def to_record(a, source):
     loc = f"{lk:.1f} km ({lk / L_ * 100:.0f}%)" if lk is not None and L_ else '-'
     f1 = lambda v: round(float(v), 1) if v is not None else None
     return {'Incident': m.get('Incident') or '-', 'Date': m.get('Date') or (str(a.get('record_start'))[:19] if a.get('record_start') else '-'),
-            'Station': m.get('Station') or '-', 'Line': m.get('Line') or '-', 'Relay': m.get('Relay') or '-',
+            'Station': m.get('Station') or '-', 'Line': m.get('Line') or '-', 'End A': m.get('End A') or '', 'End B': m.get('End B') or '', 'Relay': m.get('Relay') or '-',
             'Fault Type': a.get('type', '-') if a.get('fault') else 'None', 'Fault Description': fg.TYPE_TEXT.get(a.get('type'), '-') if a.get('fault') else 'No fault',
             'AI Confidence (%)': round(a.get('type_conf', 0) * 100) if a.get('fault') else None, 'Classic Type': a.get('type_rule', '-'),
             'Location': loc, 'Location (km)': f1(lk), 'Location (%)': round(lk / L_ * 100) if lk is not None and L_ else None,
